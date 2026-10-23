@@ -11,8 +11,10 @@ import threading
 from pathlib import Path
 
 # Third party imports
-from aeth_ext.monitoring.heartbeat import send_heartbeat
 from pydantic import SecretStr
+
+# First party imports
+from aeth_ext.monitoring.heartbeat import send_heartbeat
 
 BEAT_SECS = 60
 HEARTBEAT_FILE = Path("/app/persisted_data/logs/heartbeat.txt")

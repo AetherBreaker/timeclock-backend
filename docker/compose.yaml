@@ -5,9 +5,9 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       args:
-        GIT_REPO: 
+        GIT_REPO: https://github.com/AetherBreaker/timeclock-backend.git
         GIT_TAG: v0.1.0
-    restart: no
+    restart: unless-stopped
     volumes:
       - type: bind
         source: /data/timeclock_backend_files
@@ -28,6 +28,21 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  # Not in [tool.docker].services: built from this checkout with its own Dockerfile. The clocks dial
+  # port 2223; Coolify reaches each clock at timeclock-tunnel:<its port> over the coolify network.
+  timeclock-tunnel:
+    container_name: timeclock-tunnel
+    build:
+      context: .
+      dockerfile: docker/tunnel/Dockerfile
+    restart: unless-stopped
+    environment:
+      - TUNNEL_SSH_HOST_KEY_B64=${TUNNEL_SSH_HOST_KEY_B64:?}
+    ports:
+      - "2223:22"
+    networks:
+      - coolify
 
 networks:
   coolify:
