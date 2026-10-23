@@ -1,3 +1,0 @@
-# One line per clock, as printed by `sudo timeclock-tunnel-setup` on the clock:
-#   restrict,port-forwarding,permitlisten="0.0.0.0:<port>" ssh-ed25519 AAAA... <hostname>-tunnel
-# Ports: 22001 for the first clock, then 22002, and so on. Commit, push, redeploy.

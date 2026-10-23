@@ -29,21 +29,6 @@ services:
       timeout: 5s
       retries: 3
 
-  # Not in [tool.docker].services: built from this checkout with its own Dockerfile. The clocks dial
-  # port 2223; Coolify reaches each clock at timeclock-tunnel:<its port> over the coolify network.
-  timeclock-tunnel:
-    container_name: timeclock-tunnel
-    build:
-      context: .
-      dockerfile: docker/tunnel/Dockerfile
-    restart: unless-stopped
-    environment:
-      - TUNNEL_SSH_HOST_KEY_B64=${TUNNEL_SSH_HOST_KEY_B64:?}
-    ports:
-      - "2223:22"
-    networks:
-      - coolify
-
 networks:
   coolify:
     external: true

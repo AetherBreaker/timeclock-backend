@@ -1,7 +1,7 @@
 [project]
   name            = "timeclock-backend"
   version         = "0.1.0"
-  description     = "The time clocks' server side: the Coolify tunnel endpoint now; the database relay, PostgreSQL and the scheduler later"
+  description     = "The time clocks' server side: the database relay, PostgreSQL and the scheduler"
   readme          = "README.md"
   requires-python = ">=3.14"
   dependencies    = [
@@ -51,7 +51,6 @@
     # value stands (a plain template scalar would replace it).
 
 [tool.docker]
-  # The tunnel service in docker/compose.yaml is deliberately unlisted: its own Dockerfile, no devkit-container.
   services                = ["timeclock-backend"]
   required_persisted_dirs = ["persisted_data"]
   supervise               = false
