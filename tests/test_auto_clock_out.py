@@ -5,11 +5,12 @@ import asyncio
 from contextlib import suppress
 from datetime import UTC, date, datetime, time
 from itertools import count
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 # Third party imports
+import psycopg
 import pytest
 from psycopg import sql
 
@@ -138,6 +139,18 @@ async def test_disabled_does_nothing(migrated: Database) -> None:
   await set_settings(migrated, auto_clock_out_enabled=False)
   assert await run_auto_clock_out(migrated, today=D) == 0
   assert await clock_outs(migrated) == []
+
+
+async def test_database_error_alerts_and_skips(
+  migrated: Database, alerts: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+  async def unreachable(*_args: object, **_kwargs: object) -> NoReturn:
+    raise psycopg.OperationalError("connection refused")
+
+  monkeypatch.setattr(auto_clock_out, "connect", unreachable)
+  assert await run_auto_clock_out(migrated, today=D) == 0
+  [(reason, _)] = alerts
+  assert reason == f"Auto clock-out failed in {migrated.name}"
 
 
 async def test_stamp_is_local_time_on_dst_change_day(migrated: Database) -> None:

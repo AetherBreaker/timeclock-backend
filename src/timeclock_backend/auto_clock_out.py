@@ -59,7 +59,12 @@ async def run_auto_clock_out(db: Database, *, today: date | None = None) -> int:
     (alerted; the next run retries).
   """
   today = today or datetime.now(SETTINGS.tz).date()
-  settings = await read_settings(db)
+  try:
+    settings = await read_settings(db)
+  except psycopg.Error as e:
+    # An outage hits this first connection; letting it escape would be fatal to the process.
+    alert(f"Auto clock-out failed in {db.name}", str(e))
+    return 0
   if not settings.auto_clock_out_enabled:
     return 0
   try:
