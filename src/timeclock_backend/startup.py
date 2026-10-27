@@ -81,7 +81,7 @@ async def main() -> None:
 
   logger.log(INFO if SHUTDOWN.kind is ShutdownKind.GRACEFUL else WARNING, "Shutdown requested (%s); stopping", SHUTDOWN.kind.name)
 
-  # Stop accepting only: the library's `Server` has no `close_clients`, and `wait_closed()` would wait on every open clock
+  # Stop accepting only: uvloop's and winloop's `Server` have no `close_clients`, and `wait_closed()` would wait on every open clock
   # connection. Once `main()` returns, `asyncio.run` cancels the remaining handler tasks, whose `finally` closes both transports.
   relay.close()
 
