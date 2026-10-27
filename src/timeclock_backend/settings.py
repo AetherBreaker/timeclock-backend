@@ -12,7 +12,8 @@ from pydantic import Field, SecretStr
 class Settings(BaseSettings):
   """The backend's settings; `tz`, the log folder and the alert settings come from aeth_ext's base."""
 
-  postgres_host: Annotated[str, Field(alias="POSTGRES_HOST")] = "postgres"
+  # The sidecar's compose service; not `postgres`, which is Coolify's own database's alias on the shared coolify network.
+  postgres_host: Annotated[str, Field(alias="POSTGRES_HOST")] = "timeclock-postgres"
   postgres_port: Annotated[int, Field(alias="POSTGRES_PORT")] = 5432
   # Compose's `${POSTGRES_PASSWORD:?}` guarantees a value in production; the empty default lets tests import this module.
   postgres_password: Annotated[SecretStr, Field(alias="POSTGRES_PASSWORD")] = SecretStr("")
