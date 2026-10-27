@@ -1,39 +1,44 @@
-"""The app `run-app-timeclock-backend`: for now, only the heartbeat.
-
-The database relay and the scheduler land here with the design spec. Until then the app writes the
-heartbeat the standard healthcheck reads, and pings healthchecks.io itself (no supervisor yet).
-"""
-
-# Standard library imports
-import os
-import signal
-import threading
-from pathlib import Path
+"""Application entry point: initializes aeth_ext then hands off to the async startup routine."""
 
 # Third party imports
-from aeth_ext.monitoring.heartbeat import send_heartbeat
-from pydantic import SecretStr
+from aeth_ext import initialize
 
-BEAT_SECS = 60
-HEARTBEAT_FILE = Path("/app/persisted_data/logs/heartbeat.txt")
+PROJECT_NAME = "timeclock-backend"
+# A log-server outage must not take the relay down (spec §8).
+REQUIRE_LOG_SERVER = False
+SHUTDOWN_ON_LOG_REJECTION = False
 
 
 def run_app() -> None:
-  """Beat every `BEAT_SECS` until SIGINT or SIGTERM."""
-  stop = threading.Event()
-  signal.signal(signal.SIGINT, lambda *_: stop.set())
-  signal.signal(signal.SIGTERM, lambda *_: stop.set())
-  HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
-  url = os.environ.get("ALERTS_HEALTHCHECK_PING_URL", "").strip()
-  key = os.environ.get("PINGKEY", "").strip()
-  while not stop.is_set():
-    send_heartbeat(
-      HEARTBEAT_FILE,
-      ping_url=SecretStr(url) if url else None,
-      pingkey=SecretStr(key) if key else None,
-      slug=os.environ.get("HEARTBEAT_SLUG"),
-    )
-    stop.wait(BEAT_SECS)
+  """Run the main application loop."""
+  try:
+    initialize(asyncio=True, logging="socket")
+
+    # Deferred so `initialize` runs before `startup`'s module-level side effects (and before asyncio
+    # is first imported).
+    # Standard library imports
+    from asyncio import run
+
+    # First party imports
+    from timeclock_backend.startup import main
+
+    run(main())
+
+  except KeyboardInterrupt:
+    # aeth_ext's v8 shutdown exit nudge: an unconditional simulated SIGINT. Normally `main()`
+    # returns on its own after awaiting SHUTDOWN_COMPLETE and the nudge is skipped; it lands here
+    # only if `main()`'s tail or asyncio's own close outran the shutdown budget, or if a shutdown
+    # was driven during the import window above -- most plausibly the central log server rejecting
+    # this program's config during `initialize` (the deferred import alone takes seconds, against a
+    # 0.9s FATAL nudge). Not an error either way; the exit code below says how we stopped.
+    pass
+
+  # Imported here, not at the top of the module, because `startup` may be exactly what failed to
+  # finish importing -- this module stays reachable regardless.
+  # Third party imports
+  from aeth_ext.errors.shutdown import SHUTDOWN, ShutdownKind
+
+  raise SystemExit(1 if SHUTDOWN.kind >= ShutdownKind.FATAL else 0)
 
 
 if __name__ == "__main__":
