@@ -12,6 +12,7 @@ from timeclock_schema.migrations import load_migrations
 
 # Local folder imports
 from .databases import DATABASES, Database, connect
+from .settings import SETTINGS
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -88,6 +89,13 @@ async def bootstrap(databases: Sequence[Database] = DATABASES, *, attempts: int 
     for database in databases:
       async with await connect(database.name, autocommit=True) as conn:
         await apply_migrations(conn)
+        # The runs' zone (spec §8.4): a new or changed value reprojects them in the same transaction; an unchanged one
+        # updates nothing, so it fires nothing.
+        await conn.execute(
+          "INSERT INTO backend.environment (tz) VALUES (%s) ON CONFLICT (id) DO UPDATE SET tz = EXCLUDED.tz "
+          "WHERE backend.environment.tz IS DISTINCT FROM EXCLUDED.tz",
+          (SETTINGS.tz.key,),
+        )
 
     for database in databases:
       group, name = sql.Identifier(database.clock_group), sql.Identifier(database.name)

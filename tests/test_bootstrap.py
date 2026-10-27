@@ -13,6 +13,7 @@ from psycopg.conninfo import make_conninfo
 from timeclock_backend import databases
 from timeclock_backend.bootstrap import apply_migrations, bootstrap
 from timeclock_backend.databases import Database, connect
+from timeclock_backend.settings import SETTINGS
 
 
 def _two_databases() -> tuple[Database, Database]:
@@ -47,6 +48,30 @@ async def test_bootstrap_is_idempotent(fresh_database: Database) -> None:
   await bootstrap([fresh_database])
   async with await connect(fresh_database.name, autocommit=True) as conn:
     assert await apply_migrations(conn) == ()
+
+
+async def test_bootstrap_writes_the_time_zone_and_projects(fresh_database: Database) -> None:
+  await bootstrap([fresh_database])
+  async with await connect(fresh_database.name) as conn:
+    assert await (await conn.execute("SELECT tz FROM backend.environment")).fetchall() == [{"tz": SETTINGS.tz.key}]
+    zones = await (await conn.execute("SELECT scheduled_tz, count(*) AS n FROM backend.auto_clock_out_runs GROUP BY 1")).fetchall()
+  assert zones == [{"scheduled_tz": SETTINGS.tz.key, "n": 7}]
+
+
+async def test_bootstrap_reprojects_only_when_the_zone_changes(fresh_database: Database) -> None:
+  ids = "SELECT array_agg(id ORDER BY id) AS ids FROM backend.auto_clock_out_runs WHERE ran_at IS NULL AND scheduled_for > now()"
+  await bootstrap([fresh_database])
+  async with await connect(fresh_database.name) as conn:
+    first = await (await conn.execute(ids)).fetchone()
+  await bootstrap([fresh_database])
+  async with await connect(fresh_database.name) as conn:
+    assert await (await conn.execute(ids)).fetchone() == first  # unchanged zone: no reprojection
+    await conn.execute("UPDATE backend.environment SET tz = 'UTC'")
+  await bootstrap([fresh_database])
+  async with await connect(fresh_database.name) as conn:
+    assert await (await conn.execute("SELECT tz FROM backend.environment")).fetchone() == {"tz": SETTINGS.tz.key}
+    zones = await (await conn.execute("SELECT DISTINCT scheduled_tz FROM backend.auto_clock_out_runs WHERE scheduled_for > now()")).fetchall()
+  assert zones == [{"scheduled_tz": SETTINGS.tz.key}]
 
 
 async def test_connect_follows_the_clock_group(pg_server: str) -> None:

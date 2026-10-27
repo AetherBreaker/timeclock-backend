@@ -19,6 +19,9 @@ from uuid import uuid4
 
 # aeth_ext refuses to import without it.
 os.environ.setdefault("ALERTS_EMAIL_PWD", "test")
+# aeth_ext's default zone, US/Eastern, is a legacy alias the postgres:18 image's tzdata lacks (verified: no `US/*` zone in
+# pg_timezone_names), so writing it to backend.environment would fail every bootstrap. Production sets TZ (compose).
+os.environ.setdefault("TZ", "America/New_York")
 
 # Third party imports
 import psycopg
