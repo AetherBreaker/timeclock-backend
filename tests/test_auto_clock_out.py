@@ -3,10 +3,10 @@
 # Standard library imports
 import asyncio
 from contextlib import suppress
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from itertools import count
 from typing import TYPE_CHECKING, Any, NoReturn
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 # Third party imports
@@ -63,12 +63,19 @@ async def add_employee(db: Database) -> int:
   return row["id"]
 
 
-async def add_punch(db: Database, employee_id: int, kind: str, at: datetime) -> None:
+async def add_punch(db: Database, employee_id: int, kind: str, at: datetime) -> UUID:
+  punch_id = uuid4()
   async with await connect(db.name) as conn:
     await conn.execute(
       "INSERT INTO punches (id, employee_id, kind, at, instance_id) VALUES (%s, %s, %s, %s, 'test')",
-      (uuid4(), employee_id, kind, at),
+      (punch_id, employee_id, kind, at),
     )
+  return punch_id
+
+
+async def void(db: Database, punch_id: UUID) -> None:
+  async with await connect(db.name) as conn:
+    await conn.execute("INSERT INTO punch_corrections (punch_id, action, note) VALUES (%s, 'void', 'test')", (punch_id,))
 
 
 async def set_settings(db: Database, **cols: object) -> None:
@@ -102,6 +109,27 @@ async def test_open_shift_closed_at_stamp(migrated: Database) -> None:
 async def test_shift_started_after_stamp_is_left_open(migrated: Database) -> None:
   e = await add_employee(migrated)
   await add_punch(migrated, e, "clock_in", local(D, 19))
+  await set_settings(migrated, auto_clock_out_run_time=time(23), auto_clock_out_stamp_time=time(18))
+  assert await run_auto_clock_out(migrated, today=D) == 0
+  assert await clock_outs(migrated) == []
+  # The next day's run closes it at that day's stamp.
+  assert await run_auto_clock_out(migrated, today=D + timedelta(days=1)) == 1
+  [row] = await clock_outs(migrated)
+  assert row["at"] == local(D + timedelta(days=1), 18)
+
+
+async def test_voided_clock_out_reopens_shift(migrated: Database) -> None:
+  e = await add_employee(migrated)
+  await add_punch(migrated, e, "clock_in", local(D, 8))
+  await void(migrated, await add_punch(migrated, e, "clock_out", local(D, 16)))
+  await set_settings(migrated, auto_clock_out_run_time=time(23), auto_clock_out_stamp_time=time(18))
+  assert await run_auto_clock_out(migrated, today=D) == 1
+  assert [r["at"] for r in await clock_outs(migrated) if r["automatic"]] == [local(D, 18)]
+
+
+async def test_voided_clock_in_leaves_nothing_open(migrated: Database) -> None:
+  e = await add_employee(migrated)
+  await void(migrated, await add_punch(migrated, e, "clock_in", local(D, 8)))
   await set_settings(migrated, auto_clock_out_run_time=time(23), auto_clock_out_stamp_time=time(18))
   assert await run_auto_clock_out(migrated, today=D) == 0
   assert await clock_outs(migrated) == []
@@ -173,6 +201,23 @@ async def test_invalid_settings_skip_and_alert(migrated: Database, alerts: list[
   [(reason, _, kwargs)] = alerts
   assert migrated.name in reason
   assert kwargs["in_except_block"] is False
+
+
+async def test_stamp_after_run_time_still_schedules_and_catch_up_alerts(
+  migrated: Database, alerts: list[tuple[str, str, dict[str, Any]]]
+) -> None:
+  scheduler = Scheduler.init_scheduler()
+  scheduler.start()
+  try:
+    e = await add_employee(migrated)
+    await add_punch(migrated, e, "clock_in", local(D, 8))
+    await set_settings(migrated, auto_clock_out_run_time=time(23), auto_clock_out_stamp_time=time(23, 30))
+    await schedule_auto_clock_out(scheduler, migrated, now=local(D, 23, 15))
+    assert scheduler.get_job(f"auto_clock_out:{migrated.name}") is not None
+    assert len(alerts) == 1
+    assert await clock_outs(migrated) == []
+  finally:
+    scheduler.shutdown(wait=False)
 
 
 async def test_disabled_does_nothing(migrated: Database) -> None:
