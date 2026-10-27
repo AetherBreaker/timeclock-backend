@@ -61,8 +61,7 @@ async def run_auto_clock_out(db: Database, *, today: date | None = None) -> int:
     today: The day being closed; defaults to the date of the latest run time.
 
   Returns:
-    The number of clock-outs inserted; 0 when disabled, when the settings are invalid (alerted), or after a database error
-    (alerted; the next run retries).
+    The number of clock-outs inserted; 0 when disabled or after a database error (alerted; the next run retries).
   """
   # Every alert passes wait=False: the default joins the send threads on the loop for up to ~21 s, stalling the relay.
   try:
@@ -73,17 +72,12 @@ async def run_auto_clock_out(db: Database, *, today: date | None = None) -> int:
     return 0
   if not settings.auto_clock_out_enabled:
     return 0
-  try:
-    cfg = settings.auto_clock_out()
-  except ValidationError as e:
-    alert(f"Auto clock-out skipped in {db.name}", str(e), in_except_block=False, wait=False)
-    return 0
   if today is None:
     # The latest run time's date: a firing late within the misfire grace can land past midnight, a day ahead.
     now = datetime.now(SETTINGS.tz)
-    today = now.date() if now.time() >= cfg.run_time else now.date() - timedelta(days=1)
-  # Built from the local date, so the stamp is right on a DST change day.
-  stamp = datetime.combine(today, cfg.stamp_time, tzinfo=SETTINGS.tz).astimezone(UTC)
+    today = now.date() if now.time() >= settings.auto_clock_out_run_time else now.date() - timedelta(days=1)
+  # Built from the local date, so the stamp is right on a DST change day. A stamp later than the run time stays on the run's day.
+  stamp = datetime.combine(today, settings.auto_clock_out_stamp_time, tzinfo=SETTINGS.tz).astimezone(UTC)
   try:
     async with await connect(db.name) as conn:
       # First in the transaction: an overlapping run waits here, then reads this one's committed inserts (READ COMMITTED).
@@ -127,7 +121,7 @@ async def run_auto_clock_out(db: Database, *, today: date | None = None) -> int:
 async def schedule_auto_clock_out(scheduler: Scheduler, db: Database, *, now: datetime | None = None) -> None:
   """(Re)schedule `db`'s job from its settings, then catch up if today's run time has passed (spec 8.4).
 
-  A disabled setting removes the job. The run time is scheduled even when the stamp time is invalid; the run skips and alerts.
+  A disabled setting removes the job.
   """
   settings = await read_settings(db)
   job_id = f"{JOB_ID_PREFIX}{db.name}"
