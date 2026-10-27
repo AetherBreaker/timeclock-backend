@@ -5,7 +5,7 @@ import asyncio
 from contextlib import suppress
 from datetime import UTC, date, datetime, time, timedelta
 from itertools import count
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, override
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -155,6 +155,7 @@ async def test_scheduled_run_stamps_the_run_times_date(migrated: Database, monke
   """
 
   class FrozenDatetime(datetime):
+    @override
     @classmethod
     def now(cls, tz: Any = None) -> FrozenDatetime:
       return cls.fromtimestamp(now.timestamp(), tz)
