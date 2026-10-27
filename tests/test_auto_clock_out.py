@@ -5,7 +5,7 @@ import asyncio
 from contextlib import suppress
 from datetime import UTC, date, datetime, time
 from itertools import count
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 import pytest
 from psycopg import sql
+from timeclock_schema.wire import NOTIFY_CHANNEL
 
 # First party imports
 from timeclock_backend import auto_clock_out
@@ -38,10 +39,15 @@ async def migrated(fresh_database: Database) -> Database:
 
 
 @pytest.fixture(autouse=True)
-def alerts(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
-  """Record `alert` calls: aeth_ext's is a no-op outside `-O`."""
-  recorded: list[tuple[str, str]] = []
-  monkeypatch.setattr(auto_clock_out, "alert", lambda reason, details, **_: recorded.append((reason, details)))
+def alerts(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, dict[str, Any]]]:
+  """Record `alert` calls (aeth_ext's is a no-op outside `-O`); every call must pass `wait=False` so it can't block the loop."""
+  recorded: list[tuple[str, str, dict[str, Any]]] = []
+
+  def record(reason: str, details: str, **kwargs: Any) -> None:
+    assert kwargs.get("wait") is False
+    recorded.append((reason, details, kwargs))
+
+  monkeypatch.setattr(auto_clock_out, "alert", record)
   return recorded
 
 
@@ -101,6 +107,41 @@ async def test_shift_started_after_stamp_is_left_open(migrated: Database) -> Non
   assert await clock_outs(migrated) == []
 
 
+async def test_concurrent_runs_insert_once(migrated: Database) -> None:
+  e = await add_employee(migrated)
+  await add_punch(migrated, e, "clock_in", local(D, 8))
+  await set_settings(migrated, auto_clock_out_run_time=time(23), auto_clock_out_stamp_time=time(18))
+  assert sorted(await asyncio.gather(run_auto_clock_out(migrated, today=D), run_auto_clock_out(migrated, today=D))) == [0, 1]
+  assert len(await clock_outs(migrated)) == 1
+
+
+@pytest.mark.parametrize(
+  "now",
+  [datetime(2026, 10, 28, 0, 0, 30, tzinfo=NY), datetime(2026, 10, 27, 23, 59, 59, tzinfo=NY)],
+  ids=["fired-late-past-midnight", "on-time"],
+)
+async def test_scheduled_run_stamps_the_run_times_date(migrated: Database, monkeypatch: pytest.MonkeyPatch, now: datetime) -> None:
+  """Without `today`, the run stamps the date of the latest run time, so a late firing past midnight isn't a day ahead.
+
+  The clock is injected by replacing the module's `datetime` with a subclass whose `now()` is fixed.
+  """
+
+  class FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz: Any = None) -> FrozenDatetime:
+      return cls.fromtimestamp(now.timestamp(), tz)
+
+  monkeypatch.setattr(auto_clock_out, "datetime", FrozenDatetime)
+  forgot = await add_employee(migrated)
+  await add_punch(migrated, forgot, "clock_in", local(D, 8))
+  just_in = await add_employee(migrated)
+  await add_punch(migrated, just_in, "clock_in", datetime(2026, 10, 28, 0, 0, 10, tzinfo=NY))
+  await set_settings(migrated, auto_clock_out_run_time=time(23, 59, 59), auto_clock_out_stamp_time=time(23))
+  assert await run_auto_clock_out(migrated) == 1
+  [row] = await clock_outs(migrated)
+  assert (row["employee_id"], row["at"]) == (forgot, local(D, 23))
+
+
 async def test_job_is_idempotent(migrated: Database) -> None:
   e = await add_employee(migrated)
   await add_punch(migrated, e, "clock_in", local(D, 8))
@@ -123,14 +164,15 @@ async def test_break_closed_and_finished_shift_untouched(migrated: Database) -> 
   assert [r["employee_id"] for r in automatic] == [on_break]
 
 
-async def test_invalid_settings_skip_and_alert(migrated: Database, alerts: list[tuple[str, str]]) -> None:
+async def test_invalid_settings_skip_and_alert(migrated: Database, alerts: list[tuple[str, str, dict[str, Any]]]) -> None:
   e = await add_employee(migrated)
   await add_punch(migrated, e, "clock_in", local(D, 8))
   await set_settings(migrated, auto_clock_out_run_time=time(23), auto_clock_out_stamp_time=time(23, 30))
   assert await run_auto_clock_out(migrated, today=D) == 0
   assert await clock_outs(migrated) == []
-  [(reason, _)] = alerts
+  [(reason, _, kwargs)] = alerts
   assert migrated.name in reason
+  assert kwargs["in_except_block"] is False
 
 
 async def test_disabled_does_nothing(migrated: Database) -> None:
@@ -142,14 +184,14 @@ async def test_disabled_does_nothing(migrated: Database) -> None:
 
 
 async def test_database_error_alerts_and_skips(
-  migrated: Database, alerts: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+  migrated: Database, alerts: list[tuple[str, str, dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
   async def unreachable(*_args: object, **_kwargs: object) -> NoReturn:
     raise psycopg.OperationalError("connection refused")
 
   monkeypatch.setattr(auto_clock_out, "connect", unreachable)
   assert await run_auto_clock_out(migrated, today=D) == 0
-  [(reason, _)] = alerts
+  [(reason, _, _)] = alerts
   assert reason == f"Auto clock-out failed in {migrated.name}"
 
 
@@ -230,6 +272,12 @@ async def test_settings_notification_reschedules(migrated: Database) -> None:
     await wait_for(lambda: scheduler.get_job(job_id) is not None)  # pyright: ignore[reportUnnecessaryComparison]
     await set_settings(migrated, auto_clock_out_run_time=time(20), auto_clock_out_stamp_time=time(20))
     await wait_for(lambda: trigger_hour() == "20")
+    # Any login may NOTIFY: a malformed payload is skipped, and the listener keeps serving real changes.
+    async with await connect(migrated.name, autocommit=True) as conn:
+      await conn.execute(sql.SQL("NOTIFY {}, 'x'").format(sql.Identifier(NOTIFY_CHANNEL)))
+    await set_settings(migrated, auto_clock_out_run_time=time(21), auto_clock_out_stamp_time=time(21))
+    await wait_for(lambda: trigger_hour() == "21")
+    assert not task.done()
   finally:
     task.cancel()
     with suppress(asyncio.CancelledError):
