@@ -33,8 +33,11 @@ _MAX_BACKOFF: Final = 60.0
 # Serializes overlapping runs on one database (across processes, which _PASS_LOCKS doesn't reach); distinct from bootstrap.MIGRATION_LOCK_KEY.
 _RUN_LOCK_KEY: Final = 7_461_726_502
 RETRY_DELAY: Final = timedelta(minutes=10)
-# Bounds the pass's wait for the projection lock, which an owner's open SQL-editor transaction on config.settings holds.
+# Bounds every lock wait (projection, run key, row): an owner's open SQL-editor transaction or a second backend instance would
+# otherwise stall the pass silently while it holds _PASS_LOCKS. A timeout becomes the pass's alert and retry.
 _LOCK_TIMEOUT: Final = "1min"
+# A job re-added at or before the scheduler's now is dropped (the firing job still holds its instance slot), skipping the run.
+_MIN_WAIT: Final = timedelta(seconds=1)
 # Serializes one database's passes (the listener's and the job's), so a stale pass can't overwrite a fresher pass's job.
 _PASS_LOCKS: Final[defaultdict[str, asyncio.Lock]] = defaultdict(asyncio.Lock)
 
@@ -52,7 +55,8 @@ async def run_auto_clock_out(db: Database, run_id: int) -> int:
     psycopg.Error: On a database error, with nothing written.
   """
   async with await connect(db.name) as conn:
-    # First in the transaction: an overlapping run waits here, then reads this one's committed inserts (READ COMMITTED).
+    await conn.execute("SELECT set_config('lock_timeout', %s, true)", (_LOCK_TIMEOUT,))
+    # First after that: an overlapping run waits here, then reads this one's committed inserts (READ COMMITTED).
     await conn.execute("SELECT pg_advisory_xact_lock(%s)", (_RUN_LOCK_KEY,))
     run = await (
       await conn.execute(
@@ -115,24 +119,30 @@ async def sync_auto_clock_out(scheduler: Scheduler, db: Database) -> None:
         await conn.execute("SELECT set_config('lock_timeout', %s, false)", (_LOCK_TIMEOUT,))
         # The triggers project only on edits; this extends the projection as the days pass.
         await conn.execute("SELECT backend.project_auto_clock_out_runs()")
+        # One instant splits due from upcoming: each query's own now() let a row come due between them and fall in neither.
+        [t0_row] = await (await conn.execute("SELECT now() AS t0")).fetchall()
+        t0 = t0_row["t0"]
         due = await (
           await conn.execute(
-            "SELECT id FROM backend.auto_clock_out_runs WHERE ran_at IS NULL AND scheduled_for <= now() "
-            "AND scheduled_for > now() - %s AND EXISTS (SELECT FROM config.settings WHERE auto_clock_out_enabled) "
+            "SELECT id FROM backend.auto_clock_out_runs WHERE ran_at IS NULL AND scheduled_for <= %(t0)s "
+            "AND scheduled_for > %(t0)s - %(lookback)s AND EXISTS (SELECT FROM config.settings WHERE auto_clock_out_enabled) "
             "ORDER BY scheduled_for, id",
-            (LOOKBACK,),
+            {"t0": t0, "lookback": LOOKBACK},
           )
         ).fetchall()
       for row in due:
         await run_auto_clock_out(db, row["id"])
-      # Read after the runs, so the job never lands on a row that came due while they ran.
       async with await connect(db.name, autocommit=True) as conn:
+        # A wait, not Postgres's instant: the backend's clock may differ from the server's. A row that came due during the
+        # runs has a negative wait and gets the floor.
         upcoming = await (
           await conn.execute(
-            "SELECT min(scheduled_for) AS at FROM backend.auto_clock_out_runs WHERE ran_at IS NULL AND scheduled_for > now()"
+            "SELECT min(scheduled_for) - now() AS wait FROM backend.auto_clock_out_runs WHERE ran_at IS NULL AND scheduled_for > %s",
+            (t0,),
           )
         ).fetchone()
-      next_at = None if upcoming is None else upcoming["at"]
+      wait = None if upcoming is None else upcoming["wait"]
+      next_at = None if wait is None else datetime.now(UTC) + max(wait, _MIN_WAIT)
     except psycopg.Error as e:
       # wait=False: the default joins the send threads on the loop for up to ~21 s, stalling the relay.
       alert(f"Auto clock-out failed in {db.name}", str(e), wait=False)

@@ -5,11 +5,13 @@ import asyncio
 from contextlib import suppress
 from datetime import UTC, date, datetime, time, timedelta
 from itertools import count
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, override
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 # Third party imports
+import apscheduler.executors.base
+import apscheduler.schedulers.base
 import psycopg
 import pytest
 from apscheduler.triggers.date import DateTrigger
@@ -258,6 +260,12 @@ def job_time(scheduler: Scheduler, db: Database) -> datetime | None:
   return None if job is None else job.next_run_time  # pyright: ignore[reportUnnecessaryComparison, reportAttributeAccessIssue]
 
 
+def job_at(scheduler: Scheduler, db: Database, expected: datetime) -> bool:
+  """Whether the job is set for `expected`, give or take the pass's clock reads: it schedules a wait, not an instant."""
+  at = job_time(scheduler, db)
+  return at is not None and abs(at - expected) < timedelta(seconds=1)
+
+
 async def wait_for(predicate: Callable[[], bool]) -> None:
   async with asyncio.timeout(5):
     while not predicate():  # noqa: ASYNC110  # polls a scheduler's job table; there is nothing to await
@@ -291,7 +299,7 @@ async def test_pass_schedules_the_next_row(migrated: Database, noon: str, schedu
   await sync_auto_clock_out(scheduler, migrated)
   upcoming = await future_runs(migrated)
   assert len(upcoming) == 7  # noqa: PLR2004  # the projection's 7 days
-  assert job_time(scheduler, migrated) == upcoming[0]["scheduled_for"]
+  assert job_at(scheduler, migrated, upcoming[0]["scheduled_for"])
   job = scheduler.get_job(f"auto_clock_out:{migrated.name}")
   assert job.misfire_grace_time is None  # pyright: ignore[reportAttributeAccessIssue]  # as in job_time
   assert isinstance(job.trigger, DateTrigger)  # pyright: ignore[reportAttributeAccessIssue]
@@ -327,7 +335,7 @@ async def test_run_time_moved_into_the_past_runs_today_at_once(migrated: Databas
   assert row["at"] == ran["stamp"]
   upcoming = await future_runs(migrated)
   assert upcoming[0]["scheduled_for"] == datetime.combine(today + timedelta(days=1), time(0, 0, 1), zone)
-  assert job_time(scheduler, migrated) == upcoming[0]["scheduled_for"]
+  assert job_at(scheduler, migrated, upcoming[0]["scheduled_for"])
 
 
 async def test_pass_writes_a_later_stamp_on_the_runs_day(migrated: Database, noon: str, scheduler: Scheduler) -> None:
@@ -419,15 +427,141 @@ async def test_settings_notification_reschedules(migrated: Database, noon: str, 
     await wait_for(lambda: job_time(scheduler, migrated) is not None)
     await set_settings(migrated, auto_clock_out_run_time=time(20), auto_clock_out_stamp_time=time(20))
     expected = (await future_runs(migrated))[0]["scheduled_for"]
-    await wait_for(lambda: job_time(scheduler, migrated) == expected)
+    await wait_for(lambda: job_at(scheduler, migrated, expected))
     # Any login may NOTIFY: a malformed payload is skipped, and the listener keeps serving real changes.
     async with await connect(migrated.name, autocommit=True) as conn:
       await conn.execute(sql.SQL("NOTIFY {}, 'x'").format(sql.Identifier(NOTIFY_CHANNEL)))
     await set_settings(migrated, auto_clock_out_run_time=time(21), auto_clock_out_stamp_time=time(21))
     expected = (await future_runs(migrated))[0]["scheduled_for"]
-    await wait_for(lambda: job_time(scheduler, migrated) == expected)
+    await wait_for(lambda: job_at(scheduler, migrated, expected))
     assert not task.done()
   finally:
     task.cancel()
     with suppress(asyncio.CancelledError):
       await task
+
+
+async def wait_until_ran(db: Database, rows: int, seconds: float = 8) -> None:
+  """Wait until `rows` runs have run (ids churn on every reprojection, so runs are counted, not looked up)."""
+  query = "SELECT count(*) AS n FROM backend.auto_clock_out_runs WHERE ran_at IS NOT NULL"
+  async with asyncio.timeout(seconds):
+    while True:
+      async with await connect(db.name) as conn:
+        counted = await (await conn.execute(query)).fetchone()
+      if counted is not None and counted["n"] >= rows:
+        return
+      await asyncio.sleep(0.1)
+
+
+async def run_today_in(db: Database, zone: str, seconds: int) -> None:
+  """Moves today's run (stamped at 00:00) to `seconds` from now, in whole seconds; the noon zone keeps it on today."""
+  at = (datetime.now(ZoneInfo(zone)) + timedelta(seconds=seconds)).replace(microsecond=0)
+  await set_settings(db, auto_clock_out_run_time=at.time(), auto_clock_out_stamp_time=time(0))
+
+
+async def test_job_fires_and_rearms_when_the_backend_clock_is_ahead(
+  migrated: Database, noon: str, scheduler: Scheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """The job really fires, runs its row and leaves a job scheduled, even with the backend's clock 2 s ahead of Postgres's.
+
+  Scheduling at a raw Postgres instant fired the job 2 s early, before the row was due; the pass then re-added it at a time
+  already past, which APScheduler drops (the firing job still holds its instance slot), skipping the day.
+  """
+  skew = timedelta(seconds=2)
+
+  class Ahead(datetime):
+    @override
+    @classmethod
+    def now(cls, tz: Any = None) -> datetime:
+      return datetime.now(tz) + skew
+
+  for module in (apscheduler.schedulers.base, apscheduler.executors.base, auto_clock_out):
+    monkeypatch.setattr(module, "datetime", Ahead)
+  e = await add_employee(migrated)
+  await add_punch(migrated, e, "clock_in", datetime.now(UTC) - timedelta(hours=14))  # yesterday in the noon zone
+  await run_today_in(migrated, noon, 4)
+  await sync_auto_clock_out(scheduler, migrated)
+  await wait_until_ran(migrated, 1)
+  assert len(await clock_outs(migrated)) == 1
+  await asyncio.sleep(0.2)  # let the firing job's own re-add land
+  assert job_time(scheduler, migrated) is not None
+
+
+async def test_row_coming_due_during_a_pass_runs_at_once(
+  migrated: Database, noon: str, scheduler: Scheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A row that comes due while a pass runs older rows is run straight after, not pushed to the next day's row."""
+  missed = await add_run(migrated, datetime.now(UTC) - timedelta(days=1), zone=noon)
+  await run_today_in(migrated, noon, 2)
+  real_run = auto_clock_out.run_auto_clock_out
+
+  async def slow_run(db: Database, run_id: int) -> int:
+    if run_id == missed:
+      await asyncio.sleep(3)  # today's row comes due meanwhile
+    return await real_run(db, run_id)
+
+  monkeypatch.setattr(auto_clock_out, "run_auto_clock_out", slow_run)
+  await sync_auto_clock_out(scheduler, migrated)
+  await wait_until_ran(migrated, 2)
+
+
+async def test_run_blocked_by_an_open_transaction_alerts_and_retries(
+  migrated: Database, noon: str, scheduler: Scheduler, alerts: list[tuple[str, str, dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+  monkeypatch.setattr(auto_clock_out, "_LOCK_TIMEOUT", "200ms")
+  missed = await add_run(migrated, datetime.now(UTC) - timedelta(days=1), zone=noon)
+  before = datetime.now(UTC)
+  async with await connect(migrated.name) as other:  # e.g. a second backend instance mid-run, or an open SQL-editor lock
+    await other.execute("SELECT pg_advisory_xact_lock(%s)", (auto_clock_out._RUN_LOCK_KEY,))  # pyright: ignore[reportPrivateUsage]
+    async with asyncio.timeout(10):
+      await sync_auto_clock_out(scheduler, migrated)
+    await other.rollback()
+  [(reason, _, _)] = alerts
+  assert reason == f"Auto clock-out failed in {migrated.name}"
+  assert (await run_row(migrated, missed))["ran_at"] is None
+  retry = job_time(scheduler, migrated)
+  assert retry is not None
+  assert before + RETRY_DELAY <= retry <= datetime.now(UTC) + RETRY_DELAY
+
+
+async def test_reenabling_after_todays_run_does_not_rerun_it(migrated: Database, noon: str, scheduler: Scheduler) -> None:
+  now = datetime.now(UTC)
+  e = await add_employee(migrated)
+  await add_punch(migrated, e, "clock_in", now - timedelta(hours=14))
+  await set_settings(migrated, auto_clock_out_run_time=time(0, 0, 1), auto_clock_out_stamp_time=time(0))
+  await sync_auto_clock_out(scheduler, migrated)
+  assert len(await clock_outs(migrated)) == 1
+  await set_settings(migrated, auto_clock_out_enabled=False)
+  await sync_auto_clock_out(scheduler, migrated)
+  # Backdated before today's stamp: a rerun of today's row would close this shift.
+  await add_punch(migrated, await add_employee(migrated), "clock_in", now - timedelta(hours=14))
+  await set_settings(migrated, auto_clock_out_enabled=True)
+  await sync_auto_clock_out(scheduler, migrated)
+  assert len(await clock_outs(migrated)) == 1
+  async with await connect(migrated.name) as conn:
+    ran = await (await conn.execute("SELECT count(*) AS n FROM backend.auto_clock_out_runs WHERE ran_at IS NOT NULL")).fetchone()
+  assert ran == {"n": 1}
+
+
+async def test_reenabling_after_days_off_runs_none_of_them(migrated: Database, noon: str, scheduler: Scheduler) -> None:
+  await set_settings(migrated, auto_clock_out_enabled=False)
+  await sync_auto_clock_out(scheduler, migrated)
+  e = await add_employee(migrated)
+  await add_punch(migrated, e, "clock_in", datetime.now(UTC) - timedelta(days=3))
+  await set_settings(migrated, auto_clock_out_enabled=True)
+  await sync_auto_clock_out(scheduler, migrated)
+  assert await clock_outs(migrated) == []
+  async with await connect(migrated.name) as conn:
+    past = await (await conn.execute("SELECT count(*) AS n FROM backend.auto_clock_out_runs WHERE scheduled_for <= now()")).fetchone()
+  assert past == {"n": 0}
+  assert len(await future_runs(migrated)) == 7  # noqa: PLR2004  # the projection's 7 days
+
+
+async def test_two_rows_running_at_once_close_an_employee_once(migrated: Database) -> None:
+  e = await add_employee(migrated)
+  await add_punch(migrated, e, "clock_in", local(D, 8))
+  next_day = D + timedelta(days=1)
+  r1 = await add_run(migrated, local(D, 23), local(D, 18))
+  r2 = await add_run(migrated, local(next_day, 23), local(next_day, 18))
+  assert sorted(await asyncio.gather(run_auto_clock_out(migrated, r1), run_auto_clock_out(migrated, r2))) == [0, 1]
+  assert len(await clock_outs(migrated)) == 1
