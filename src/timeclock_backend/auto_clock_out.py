@@ -34,6 +34,8 @@ LOGGER: Final = logging.getLogger(__name__)
 LOOKBACK: Final = timedelta(days=14)
 JOB_ID_PREFIX: Final = "auto_clock_out:"
 _MAX_BACKOFF: Final = 60.0
+# Serializes overlapping runs on one database (a catch-up and the scheduled run); distinct from bootstrap.MIGRATION_LOCK_KEY.
+_RUN_LOCK_KEY: Final = 7_461_726_502
 
 
 async def read_settings(db: Database) -> ConfigSettings:
@@ -52,30 +54,40 @@ async def read_settings(db: Database) -> ConfigSettings:
 
 
 async def run_auto_clock_out(db: Database, *, today: date | None = None) -> int:
-  """Insert a clock-out at today's local stamp time for every employee still on the clock (R41.1).
+  """Insert a clock-out at `today`'s local stamp time for every employee still on the clock (R41.1).
+
+  Args:
+    db: The database to close shifts in.
+    today: The day being closed; defaults to the date of the latest run time.
 
   Returns:
     The number of clock-outs inserted; 0 when disabled, when the settings are invalid (alerted), or after a database error
     (alerted; the next run retries).
   """
-  today = today or datetime.now(SETTINGS.tz).date()
+  # Every alert passes wait=False: the default joins the send threads on the loop for up to ~21 s, stalling the relay.
   try:
     settings = await read_settings(db)
   except psycopg.Error as e:
     # An outage hits this first connection; letting it escape would be fatal to the process.
-    alert(f"Auto clock-out failed in {db.name}", str(e))
+    alert(f"Auto clock-out failed in {db.name}", str(e), wait=False)
     return 0
   if not settings.auto_clock_out_enabled:
     return 0
   try:
     cfg = settings.auto_clock_out()
   except ValidationError as e:
-    alert(f"Auto clock-out skipped in {db.name}", str(e))
+    alert(f"Auto clock-out skipped in {db.name}", str(e), in_except_block=False, wait=False)
     return 0
+  if today is None:
+    # The latest run time's date: a firing late within the misfire grace can land past midnight, a day ahead.
+    now = datetime.now(SETTINGS.tz)
+    today = now.date() if now.time() >= cfg.run_time else now.date() - timedelta(days=1)
   # Built from the local date, so the stamp is right on a DST change day.
   stamp = datetime.combine(today, cfg.stamp_time, tzinfo=SETTINGS.tz).astimezone(UTC)
   try:
     async with await connect(db.name) as conn:
+      # First in the transaction: an overlapping run waits here, then reads this one's committed inserts (READ COMMITTED).
+      await conn.execute("SELECT pg_advisory_xact_lock(%s)", (_RUN_LOCK_KEY,))
       punch_rows = await (
         await conn.execute(
           "SELECT id, employee_id, kind, at, instance_id, automatic, received_at, db_login FROM punches WHERE at >= %s",
@@ -106,7 +118,7 @@ async def run_auto_clock_out(db: Database, *, today: date | None = None) -> int:
           (uuid4(), employee_id, stamp),
         )
   except psycopg.Error as e:
-    alert(f"Auto clock-out failed in {db.name}", str(e))
+    alert(f"Auto clock-out failed in {db.name}", str(e), wait=False)
     return 0
   LOGGER.info("auto clock-out in %s closed %d shift(s) at %s", db.name, len(due), stamp)
   return len(due)
@@ -152,7 +164,13 @@ async def listen_for_settings(scheduler: Scheduler, db: Database) -> None:
         await schedule_auto_clock_out(scheduler, db)
         backoff = 1.0
         async for n in conn.notifies():
-          if Notification.model_validate_json(n.payload).table == "config.settings":
+          try:
+            table = Notification.model_validate_json(n.payload).table
+          except ValidationError:
+            # NOTIFY needs no privilege, so any login can send a malformed payload; it mustn't restart the process.
+            LOGGER.warning("ignored a malformed %s notification in %s: %.200r", NOTIFY_CHANNEL, db.name, n.payload)
+            continue
+          if table == "config.settings":
             await schedule_auto_clock_out(scheduler, db)
     except psycopg.Error, OSError:
       LOGGER.warning("settings listener for %s lost its connection; retrying in %.0f s", db.name, backoff, exc_info=True)
