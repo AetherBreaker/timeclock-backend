@@ -9,7 +9,12 @@ from timeclock_backend.settings import Settings
 
 def test_settings_defaults():
   s = Settings.get_settings()
-  assert (s.postgres_host, s.postgres_port, s.relay_port, s.relay_allowed_cidr) == ("postgres", 5432, 5432, IPv4Network("10.8.0.0/24"))
+  assert (s.postgres_host, s.postgres_port, s.relay_port, s.relay_allowed_cidr) == (
+    "timeclock-postgres",
+    5432,
+    5432,
+    IPv4Network("10.8.0.0/24"),
+  )
 
 
 def test_databases_and_their_groups():

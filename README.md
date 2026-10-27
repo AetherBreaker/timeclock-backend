@@ -6,7 +6,7 @@ The server side of [timeclock-system](https://github.com/AetherBreaker/timeclock
 
 **Relay.** A TCP relay on port 5432 forwards the time clocks' PostgreSQL connections to the sidecar. It accepts only tunnel addresses (`10.8.0.0/24`) and closes every other connection before PostgreSQL sees it.
 
-**PostgreSQL 18.** A sidecar in `docker/compose.yaml` hosts two databases, `timeclock` and `timeclock_test`. Only the backend reaches it, over a private network; the owner's SQL editor uses a loopback-only publish over SSH.
+**PostgreSQL 18.** A sidecar, the compose service `timeclock-postgres` in `docker/compose.yaml`, hosts two databases, `timeclock` and `timeclock_test`. Only the backend reaches it, over a private network; the owner's SQL editor uses a loopback-only publish over SSH.
 
 **Migrations.** At startup the backend applies the migrations from [timeclock-schema](https://github.com/AetherBreaker/timeclock-schema) to both databases.
 

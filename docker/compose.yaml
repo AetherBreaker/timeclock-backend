@@ -46,13 +46,14 @@ services:
     cap_add:
       - NET_ADMIN
     depends_on:  # added
-      postgres:
+      timeclock-postgres:
         condition: service_healthy
 
   # Not in [tool.docker].services: the official image, configured here so its setup lives in the
   # repository (R26.5). Only the backend reaches it, over timeclock-db; the loopback publish is the owner's
-  # SQL editor over SSH (R30.2).
-  postgres:
+  # SQL editor over SSH (R30.2). Not named `postgres`: the backend also joins coolify, where Coolify's own
+  # database answers to that alias.
+  timeclock-postgres:
     image: postgres:18.6
     restart: unless-stopped
     environment:
