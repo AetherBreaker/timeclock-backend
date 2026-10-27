@@ -10,7 +10,7 @@ The server side of [timeclock-system](https://github.com/AetherBreaker/timeclock
 
 **Migrations.** At startup the backend applies the migrations from [timeclock-schema](https://github.com/AetherBreaker/timeclock-schema) to both databases.
 
-**Automatic clock-out.** A daily job per database closes the shifts still open at the configured time.
+**Automatic clock-out.** Each database records every scheduled run in `backend.auto_clock_out_runs`, projected 7 days ahead from `config.settings` in the backend's `TZ`. The backend runs each row at its time, catches up missed rows from the last 14 days oldest first, and marks each row with when it ran and how many shifts it closed.
 
 The backend is a WireGuard spoke on the hub's tunnel, without tolerate: a lost tunnel makes the container fail and restart rather than run on without it.
 
