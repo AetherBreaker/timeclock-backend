@@ -3,6 +3,7 @@
 # Standard library imports
 import asyncio
 import logging
+from importlib.resources import files
 from typing import TYPE_CHECKING, Final
 
 # Third party imports
@@ -59,6 +60,31 @@ async def apply_migrations(conn: AsyncConnection[DictRow]) -> tuple[int, ...]:
   return tuple(applied)
 
 
+async def postgres_zone_name(conn: AsyncConnection[DictRow], key: str) -> str:
+  """The first name for zone `key` that Postgres knows: `key`, its canonical zone, then that zone's other links.
+
+  zoneinfo accepts names Postgres's own tzdata may lack (the postgres:18 image has no `US/*` links, aeth_ext's default
+  `US/Eastern` among them). The equivalents come from the IANA link data, `L <target> <link>` lines in tzdata's `tzdata.zi`.
+
+  Raises:
+    ValueError: Postgres knows no equivalent name; the zone is misconfigured, and startup fails.
+  """
+  zi = (files("tzdata") / "zoneinfo" / "tzdata.zi").read_text(encoding="utf-8")
+  links = {link: target for _, target, link in (line.split() for line in zi.splitlines() if line.startswith("L "))}
+  canonical = key
+  while canonical in links:
+    canonical = links[canonical]
+  candidates = [key, canonical, *sorted(link for link, target in links.items() if target == canonical)]
+  cursor = await conn.execute("SELECT name FROM pg_timezone_names WHERE name = ANY(%s)", (candidates,))
+  known = {row["name"] for row in await cursor.fetchall()}
+  name = next((name for name in candidates if name in known), None)
+  if name is None:
+    raise ValueError(f"TZ {key!r} has no equivalent time zone name in PostgreSQL")
+  if name != key:
+    LOGGER.info("TZ %s is written to backend.environment as its equivalent %s", key, name)
+  return name
+
+
 async def bootstrap(databases: Sequence[Database] = DATABASES, *, attempts: int = 30, delay: float = 2.0) -> None:
   """Create, migrate and open up `databases`; idempotent, so it runs on every start.
 
@@ -86,6 +112,7 @@ async def bootstrap(databases: Sequence[Database] = DATABASES, *, attempts: int 
       if await cursor.fetchone() is None:
         await maintenance.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database.name)))
 
+    run_zone = await postgres_zone_name(maintenance, SETTINGS.tz.key)
     for database in databases:
       async with await connect(database.name, autocommit=True) as conn:
         await apply_migrations(conn)
@@ -94,7 +121,7 @@ async def bootstrap(databases: Sequence[Database] = DATABASES, *, attempts: int 
         await conn.execute(
           "INSERT INTO backend.environment (tz) VALUES (%s) ON CONFLICT (id) DO UPDATE SET tz = EXCLUDED.tz "
           "WHERE backend.environment.tz IS DISTINCT FROM EXCLUDED.tz",
-          (SETTINGS.tz.key,),
+          (run_zone,),
         )
 
     for database in databases:

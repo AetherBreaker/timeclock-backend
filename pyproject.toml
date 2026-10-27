@@ -10,6 +10,7 @@
     "devkit-container>=2.3.1",
     "psycopg[binary]>=3.2.10",
     "timeclock-schema>=0.3.0",
+    "tzdata>=2026.5",
   ]
 
   [project.scripts]

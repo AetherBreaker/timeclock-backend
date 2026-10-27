@@ -19,8 +19,8 @@ from uuid import uuid4
 
 # aeth_ext refuses to import without it.
 os.environ.setdefault("ALERTS_EMAIL_PWD", "test")
-# aeth_ext's default zone, US/Eastern, is a legacy alias the postgres:18 image's tzdata lacks (verified: no `US/*` zone in
-# pg_timezone_names), so writing it to backend.environment would fail every bootstrap. Production sets TZ (compose).
+# A name Postgres knows as is, so tests can expect `SETTINGS.tz.key` in backend.environment. aeth_ext's default, the link
+# US/Eastern, is written as America/New_York (test_bootstrap_writes_a_link_zone_as_its_canonical_name).
 os.environ.setdefault("TZ", "America/New_York")
 
 # Third party imports
