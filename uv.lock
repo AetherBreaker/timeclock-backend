@@ -741,6 +741,7 @@ dependencies = [
     { name = "devkit-container" },
     { name = "psycopg", extra = ["binary"] },
     { name = "timeclock-schema" },
+    { name = "tzdata" },
 ]
 
 [package.dev-dependencies]
@@ -766,6 +767,7 @@ requires-dist = [
     { name = "devkit-container", specifier = ">=2.3.1", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.10" },
     { name = "timeclock-schema", specifier = ">=0.3.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "tzdata", specifier = ">=2026.5" },
 ]
 
 [package.metadata.requires-dev]

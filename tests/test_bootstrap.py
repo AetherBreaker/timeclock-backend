@@ -1,7 +1,9 @@
 """Tests for the startup bootstrap."""
 
 # Standard library imports
+from types import SimpleNamespace
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 # Third party imports
 import psycopg
@@ -10,7 +12,7 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
 # First party imports
-from timeclock_backend import databases
+from timeclock_backend import bootstrap as bootstrap_module, databases
 from timeclock_backend.bootstrap import apply_migrations, bootstrap
 from timeclock_backend.databases import Database, connect
 from timeclock_backend.settings import SETTINGS
@@ -70,7 +72,9 @@ async def test_bootstrap_reprojects_only_when_the_zone_changes(fresh_database: D
   await bootstrap([fresh_database])
   async with await connect(fresh_database.name) as conn:
     assert await (await conn.execute("SELECT tz FROM backend.environment")).fetchone() == {"tz": SETTINGS.tz.key}
-    zones = await (await conn.execute("SELECT DISTINCT scheduled_tz FROM backend.auto_clock_out_runs WHERE scheduled_for > now()")).fetchall()
+    zones = await (
+      await conn.execute("SELECT DISTINCT scheduled_tz FROM backend.auto_clock_out_runs WHERE scheduled_for > now()")
+    ).fetchall()
   assert zones == [{"scheduled_tz": SETTINGS.tz.key}]
 
 
@@ -109,3 +113,20 @@ async def test_bootstrap_gives_up_after_its_attempts(monkeypatch: pytest.MonkeyP
   monkeypatch.setattr(databases, "SERVER_CONNINFO", "host=127.0.0.1 port=1 user=postgres password=x connect_timeout=1")
   with pytest.raises(psycopg.OperationalError):
     await bootstrap([Database("tcb_never", "timeclock_clocks")], attempts=2, delay=0)
+
+
+async def test_bootstrap_writes_a_link_zone_as_its_canonical_name(fresh_database: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+  # aeth_ext's default; the postgres:18 image's tzdata has no US/* links.
+  monkeypatch.setattr(bootstrap_module, "SETTINGS", SimpleNamespace(tz=ZoneInfo("US/Eastern")))
+  await bootstrap([fresh_database])
+  async with await connect(fresh_database.name) as conn:
+    assert await (await conn.execute("SELECT tz FROM backend.environment")).fetchall() == [{"tz": "America/New_York"}]
+    assert await (await conn.execute("SELECT DISTINCT scheduled_tz FROM backend.auto_clock_out_runs")).fetchall() == [
+      {"scheduled_tz": "America/New_York"}
+    ]
+
+
+async def test_bootstrap_fails_on_a_zone_postgres_has_no_name_for(fresh_database: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+  monkeypatch.setattr(bootstrap_module, "SETTINGS", SimpleNamespace(tz=SimpleNamespace(key="Nowhere/Fictional")))
+  with pytest.raises(ValueError, match="Nowhere/Fictional"):
+    await bootstrap([fresh_database])
