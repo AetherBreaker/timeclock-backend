@@ -193,32 +193,14 @@ async def test_break_closed_and_finished_shift_untouched(migrated: Database) -> 
   assert [r["employee_id"] for r in automatic] == [on_break]
 
 
-async def test_invalid_settings_skip_and_alert(migrated: Database, alerts: list[tuple[str, str, dict[str, Any]]]) -> None:
+async def test_stamp_after_run_time_lands_on_the_runs_day(migrated: Database, alerts: list[tuple[str, str, dict[str, Any]]]) -> None:
   e = await add_employee(migrated)
   await add_punch(migrated, e, "clock_in", local(D, 8))
   await set_settings(migrated, auto_clock_out_run_time=time(23), auto_clock_out_stamp_time=time(23, 30))
-  assert await run_auto_clock_out(migrated, today=D) == 0
-  assert await clock_outs(migrated) == []
-  [(reason, _, kwargs)] = alerts
-  assert migrated.name in reason
-  assert kwargs["in_except_block"] is False
-
-
-async def test_stamp_after_run_time_still_schedules_and_catch_up_alerts(
-  migrated: Database, alerts: list[tuple[str, str, dict[str, Any]]]
-) -> None:
-  scheduler = Scheduler.init_scheduler()
-  scheduler.start()
-  try:
-    e = await add_employee(migrated)
-    await add_punch(migrated, e, "clock_in", local(D, 8))
-    await set_settings(migrated, auto_clock_out_run_time=time(23), auto_clock_out_stamp_time=time(23, 30))
-    await schedule_auto_clock_out(scheduler, migrated, now=local(D, 23, 15))
-    assert scheduler.get_job(f"auto_clock_out:{migrated.name}") is not None
-    assert len(alerts) == 1
-    assert await clock_outs(migrated) == []
-  finally:
-    scheduler.shutdown(wait=False)
+  assert await run_auto_clock_out(migrated, today=D) == 1
+  [row] = await clock_outs(migrated)
+  assert row["at"] == local(D, 23, 30)
+  assert alerts == []
 
 
 async def test_disabled_does_nothing(migrated: Database) -> None:
