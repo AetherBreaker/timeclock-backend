@@ -1,6 +1,6 @@
 [project]
   name            = "timeclock-backend"
-  version         = "0.2.0"
+  version         = "0.3.0"
   description     = "The time clocks' server side: the database relay, PostgreSQL and the scheduler"
   readme          = "README.md"
   requires-python = ">=3.14"
