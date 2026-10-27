@@ -411,7 +411,7 @@ async def test_pass_blocked_by_an_open_settings_edit_alerts_and_retries(
   monkeypatch.setattr(auto_clock_out, "_LOCK_TIMEOUT", "200ms")
   before = datetime.now(UTC)
   async with await connect(migrated.name) as editor:  # an SQL-editor transaction left open: its trigger holds the projection lock
-    await editor.execute("UPDATE config.settings SET subtract_breaks = true")
+    await editor.execute("UPDATE config.settings SET breaks_enabled = false")
     await sync_auto_clock_out(scheduler, migrated)
     await editor.rollback()
   [(reason, _, _)] = alerts
