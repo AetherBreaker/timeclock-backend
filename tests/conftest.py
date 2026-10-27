@@ -11,6 +11,7 @@ Stop it with `docker stop timeclock-backend-pg` (`--rm` deletes it).
 
 # Standard library imports
 import asyncio
+import importlib
 import os
 import sys
 from typing import TYPE_CHECKING
@@ -34,11 +35,15 @@ if TYPE_CHECKING:
 
 
 def pytest_asyncio_loop_factories(config: pytest.Config, item: pytest.Item) -> dict[str, Callable[[], asyncio.AbstractEventLoop]]:
-  """Psycopg's async mode can't use Windows' default Proactor loop.
+  """The relay's tests run on production's loop (aeth_ext installs winloop/uvloop); the rest on the stdlib's.
 
-  pytest-asyncio 1.4 deprecates overriding the `event_loop_policy` fixture (and the policy classes are
-  deprecated on 3.14), so the loop is chosen through this hook instead.
+  The stdlib loop hides relay bugs: a closed transport's socket raises `OSError` there, where uvloop/winloop return `None`.
+  Psycopg's async mode can't use Windows' default Proactor loop, so the DB tests get the Selector loop there.
+  pytest-asyncio 1.4 deprecates overriding the `event_loop_policy` fixture, so the loop is chosen through this hook.
   """
+  if item.path.name == "test_relay.py":
+    # By name: each is installed only on its own platform.
+    return {"default": importlib.import_module("winloop" if sys.platform == "win32" else "uvloop").new_event_loop}
   return {"default": asyncio.SelectorEventLoop if sys.platform == "win32" else asyncio.new_event_loop}
 
 

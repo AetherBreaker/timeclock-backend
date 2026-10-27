@@ -8,13 +8,24 @@ import asyncio
 import logging
 import socket
 from ipaddress import IPv4Address, IPv4Network
+from typing import Final
 
 LOGGER = logging.getLogger(__name__)
+
+# Keepalive so a half-dead tunnel peer is noticed instead of holding a Postgres backend forever; the TCP_* knobs are platform-dependent.
+_KEEPALIVE: Final = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)] + [
+  (socket.IPPROTO_TCP, getattr(socket, name), value)
+  for name, value in (("TCP_KEEPIDLE", 30), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3))
+  if hasattr(socket, name)
+]
 
 
 async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
   """Copy bytes until EOF, without parsing them."""
   while data := await reader.read(65536):
+    # uvloop/winloop's write() raises RuntimeError on a closing handle, where the stdlib loop drops the data.
+    if writer.is_closing():
+      return
     writer.write(data)
     await writer.drain()
 
@@ -45,13 +56,13 @@ async def start_relay(
         return
       async with asyncio.timeout(5):
         upstream_reader, upstream_writer = await asyncio.open_connection(upstream_host, upstream_port)
-      # Keepalive so a half-dead tunnel peer is noticed instead of holding a Postgres backend forever.
       for stream in (writer, upstream_writer):
-        sock: socket.socket = stream.get_extra_info("socket")
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        for name, value in (("TCP_KEEPIDLE", 30), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3)):
-          if hasattr(socket, name):
-            sock.setsockopt(socket.IPPROTO_TCP, getattr(socket, name), value)
+        sock = stream.get_extra_info("socket")
+        if sock is None:
+          # uvloop/winloop report no socket once the peer's reset has closed the transport; `finally` cleans up.
+          return
+        for level, option, value in _KEEPALIVE:
+          sock.setsockopt(level, option, value)
       tasks = [asyncio.create_task(_pipe(reader, upstream_writer)), asyncio.create_task(_pipe(upstream_reader, writer))]
       done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
       for task in done:
