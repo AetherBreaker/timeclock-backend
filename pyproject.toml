@@ -9,7 +9,7 @@
     "apscheduler>=3.11.2,<4",
     "devkit-container>=2.3.1",
     "psycopg[binary]>=3.2.10",
-    "timeclock-schema>=0.3.1",
+    "timeclock-schema>=0.4.0",
     "tzdata>=2026.5",
   ]
 
