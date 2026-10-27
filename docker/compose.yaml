@@ -17,18 +17,66 @@ services:
       - ALERTS_EMAIL=info@sweetfiretobacco.com
       - ALERTS_EMAIL_PWD=${ALERTS_EMAIL_PWD:?}
       - ALERTS_RECIPIENTS=["jacob.ogden@sweetfiretobacco.com"]
+      - WG_PRIVATE_KEY=${WG_PRIVATE_KEY:?}
+      - WG_HUB_URL=${WG_HUB_URL:?}
+      - WG_HUB_REPO=${WG_HUB_REPO:?}
+      - WG_HUB_TOKEN=${WG_HUB_TOKEN:-}
+      # added: no tolerate (R37.6). The hub runs on this server, so a lost tunnel is a misconfiguration or a
+      # server problem: give up as soon as it counts as Disconnected, and let every failed boot alert again.
+      - WG_DISCONNECTED_LIMIT_SECS=1
+      - TZ=America/New_York  # added (R41.4)
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?}  # added
+      - LOG_CONN_HOST=central-log-server  # added: the log server's alias on the coolify network (spec §9.2)
     networks:
       - coolify
+      - timeclock-db  # added
     healthcheck:
       test:
         - CMD
         - /app/.venv/bin/devkit-container
         - healthcheck
-      start_period: 15s
+        - --file
+        - /app/persisted_data/logs/heartbeat.txt
+        - --file
+        - /app/persisted_data/logs/wireguard-heartbeat.txt
+      start_period: 90s
       interval: 30s
       timeout: 5s
       retries: 3
+    cap_add:
+      - NET_ADMIN
+    depends_on:  # added
+      postgres:
+        condition: service_healthy
+
+  # Not in [tool.docker].services: the official image, configured here so its setup lives in the
+  # repository (R26.5). Only the backend reaches it, over timeclock-db; the loopback publish is the owner's
+  # SQL editor over SSH (R30.2).
+  postgres:
+    image: postgres:18.6
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=timeclock
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?}
+    volumes:
+      # Postgres 18 images keep their data in a versioned folder below /var/lib/postgresql.
+      - type: bind
+        source: /data/timeclock_backend_postgres
+        target: /var/lib/postgresql
+        bind:
+          create_host_path: true
+    networks:
+      - timeclock-db
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d timeclock"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 networks:
   coolify:
     external: true
+  timeclock-db: {}
