@@ -27,3 +27,5 @@ Coolify reaches the clocks themselves through [coolify-tunnel](https://github.co
 | `WG_HUB_REPO` | The repository holding the hub's configuration |
 | `WG_HUB_TOKEN` | Optional: the token for reading that repository |
 | `POSTGRES_PASSWORD` | The `postgres` superuser's password, for the sidecar and the backend |
+
+The sidecar applies `POSTGRES_PASSWORD` only when it first initializes its data folder. To rotate it, run `ALTER ROLE postgres PASSWORD '…'` in the SQL editor first, then change it in Coolify and redeploy.
