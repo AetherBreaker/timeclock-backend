@@ -57,7 +57,7 @@ async def add_employee(db: Database) -> int:
   async with await connect(db.name) as conn:
     row = await (
       await conn.execute(
-        "INSERT INTO employees (name, pin_username, pin_hash) VALUES ('Ann', %s, crypt('1234', gen_salt('bf'))) RETURNING id",
+        "INSERT INTO employees (first_name, last_name, pin_username, pin_hash) VALUES ('Ann', 'Lee', %s, crypt('1234', gen_salt('bf'))) RETURNING id",
         (str(next(_pins)),),
       )
     ).fetchone()
