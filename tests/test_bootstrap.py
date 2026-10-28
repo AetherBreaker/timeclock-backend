@@ -10,6 +10,7 @@ import psycopg
 import pytest
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
+from timeclock_schema.migrations import load_migrations
 
 # First party imports
 from timeclock_backend import bootstrap as bootstrap_module, databases
@@ -39,7 +40,7 @@ async def test_bootstrap_creates_and_migrates_each_database(pg_server: str) -> N
       async with await connect(database.name) as conn:
         migrations = await (await conn.execute("SELECT version, name FROM schema_migrations")).fetchall()
         groups = await (await conn.execute("SELECT count(*) AS n FROM groups")).fetchone()
-      assert migrations == [{"version": 1, "name": "initial"}]
+      assert migrations == [{"version": m.version, "name": m.name} for m in load_migrations()]
       assert groups == {"n": 1}
   finally:
     _drop_databases(pg_server, a.name, b.name)
