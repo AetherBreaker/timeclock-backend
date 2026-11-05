@@ -17,7 +17,7 @@ from psycopg.conninfo import conninfo_to_dict
 # First party imports
 from timeclock_backend.bootstrap import bootstrap
 from timeclock_backend.databases import Database
-from timeclock_backend.web.db import PoolAccounts, Pools, editor_transaction
+from timeclock_backend.web.db import DatabaseChangedError, PoolAccounts, Pools, editor_transaction
 from timeclock_backend.web.gate import Account, EndReason, Gate, SignedOutError
 
 if TYPE_CHECKING:
@@ -101,20 +101,20 @@ async def test_the_allowlist_comes_from_production(pages_db: PagesDb) -> None:
 
 
 async def test_a_transaction_acts_as_the_badge(pages_db: PagesDb) -> None:
-  gate, storage = _gate(pages_db), {}
-  gate.start(storage, pages_db.email)
-  async with editor_transaction(pages_db.pools, gate, storage) as conn:
+  gate, storage, session = _gate(pages_db), {}, {}
+  gate.start(storage, session, pages_db.email)
+  async with editor_transaction(pages_db.pools, gate, storage, session, test_database=False) as conn:
     row = await (await conn.execute("SELECT current_user AS badge, session_user AS login")).fetchone()
   assert row == {"badge": pages_db.email, "login": "timeclock_web"}
 
 
 async def test_the_badge_ends_with_the_transaction(pages_db: PagesDb) -> None:
-  gate, storage = _gate(pages_db), {}
-  gate.start(storage, pages_db.email)
-  async with editor_transaction(pages_db.pools, gate, storage) as conn:
+  gate, storage, session = _gate(pages_db), {}, {}
+  gate.start(storage, session, pages_db.email)
+  async with editor_transaction(pages_db.pools, gate, storage, session, test_database=False) as conn:
     pid = conn.info.backend_pid
   with pytest.raises(RuntimeError):
-    async with editor_transaction(pages_db.pools, gate, storage):
+    async with editor_transaction(pages_db.pools, gate, storage, session, test_database=False):
       raise RuntimeError
   pool = pages_db.pools.production
   async with AsyncExitStack() as stack:  # every connection the pool holds, the badge's among them
@@ -125,13 +125,13 @@ async def test_the_badge_ends_with_the_transaction(pages_db: PagesDb) -> None:
 
 
 async def test_a_deleted_row_refuses_the_transaction(pages_db: PagesDb) -> None:
-  gate, storage = _gate(pages_db), {}
-  gate.start(storage, pages_db.email)
+  gate, storage, session = _gate(pages_db), {}, {}
+  gate.start(storage, session, pages_db.email)
   with pages_db.admin(pages_db.prod) as conn:
     conn.execute("DELETE FROM backend.editors WHERE email = %s", (pages_db.email,))
   ran = False
   with pytest.raises(SignedOutError) as raised:
-    async with editor_transaction(pages_db.pools, gate, storage):
+    async with editor_transaction(pages_db.pools, gate, storage, session, test_database=False):
       ran = True
   assert raised.value.reason is EndReason.REFUSED
   assert not ran
@@ -140,20 +140,33 @@ async def test_a_deleted_row_refuses_the_transaction(pages_db: PagesDb) -> None:
 async def test_the_self_edit_block_holds_in_the_test_database(pages_db: PagesDb) -> None:
   with pages_db.admin(pages_db.prod) as conn:
     conn.execute("UPDATE backend.editors SET developer = true WHERE email = %s", (pages_db.email,))
-  gate, storage = _gate(pages_db), {}
-  gate.start(storage, pages_db.email)
+  gate, storage, session = _gate(pages_db), {}, {}
+  gate.start(storage, session, pages_db.email)
   gate.choose_database(pages_db.email, test=True)
   own, other = pages_db.employees
   at = datetime.now(UTC) - timedelta(hours=1)
   with pytest.raises(psycopg.errors.InsufficientPrivilege, match="your own punches"):
-    async with editor_transaction(pages_db.pools, gate, storage) as conn:
+    async with editor_transaction(pages_db.pools, gate, storage, session, test_database=True) as conn:
       assert conn.info.dbname == pages_db.test.name
       await conn.execute(_PAGE_PUNCH, (own, at))
-  async with editor_transaction(pages_db.pools, gate, storage) as conn:
+  async with editor_transaction(pages_db.pools, gate, storage, session, test_database=True) as conn:
     await conn.execute(_PAGE_PUNCH, (other, at))
   with pages_db.admin(pages_db.test) as conn:
     rows = conn.execute("SELECT employee_id, db_login FROM punches").fetchall()
   assert rows == [(other, pages_db.email)]
+
+
+async def test_a_transaction_refuses_a_database_the_page_did_not_draw(pages_db: PagesDb) -> None:
+  with pages_db.admin(pages_db.prod) as conn:
+    conn.execute("UPDATE backend.editors SET developer = true WHERE email = %s", (pages_db.email,))
+  gate, storage, session = _gate(pages_db), {}, {}
+  gate.start(storage, session, pages_db.email)
+  gate.choose_database(pages_db.email, test=True)  # another tab switches; this page still shows production
+  ran = False
+  with pytest.raises(DatabaseChangedError):
+    async with editor_transaction(pages_db.pools, gate, storage, session, test_database=False):
+      ran = True
+  assert not ran
 
 
 async def test_the_page_login_alone_can_read_nothing(pages_db: PagesDb) -> None:

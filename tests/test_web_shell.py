@@ -2,11 +2,20 @@
 
 # Standard library imports
 import re
+import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 # Third party imports
-from nicegui import ui
+from nicegui import app, ui
 from page_sim import PageUnderTest, sign_in
+
+# First party imports
+from timeclock_backend.web.gate import Account
+
+if TYPE_CHECKING:
+  # Third party imports
+  import pytest
 
 WEB = Path(__file__).parents[1] / "src" / "timeclock_backend" / "web"
 DEVELOPER = "dev@example.com"
@@ -49,6 +58,24 @@ async def test_the_test_database_choice_belongs_to_the_account(page: PageUnderTe
   page.user.http_client.cookies.clear()  # another browser
   await sign_in(page, DEVELOPER)
   await page.user.should_see(marker="test-banner")
+
+
+async def test_an_open_page_follows_a_database_switch_from_another_tab(page: PageUnderTest, monkeypatch: pytest.MonkeyPatch) -> None:
+  monkeypatch.setattr(sys.modules["timeclock_backend.web.shell"], "SESSION_CHECK_SECS", 0.05)  # the live module
+  await sign_in(page, DEVELOPER)
+  app.storage.general["databases"] = {DEVELOPER: "test"}  # as Gate.choose_database in the other tab
+  await page.user.should_see(marker="test-banner")
+
+
+async def test_an_open_page_leaves_the_test_database_with_the_developer_mark(
+  page: PageUnderTest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  monkeypatch.setattr(sys.modules["timeclock_backend.web.shell"], "SESSION_CHECK_SECS", 0.05)
+  await sign_in(page, DEVELOPER)
+  page.user.find(marker="pref-test-db").click()
+  await page.user.should_see(marker="test-banner")
+  page.accounts.accounts[DEVELOPER] = Account(None, developer=False)
+  await page.user.should_not_see(marker="test-banner")
 
 
 async def test_signing_out_from_the_top_bar(page: PageUnderTest) -> None:

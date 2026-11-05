@@ -3,10 +3,13 @@
 Every page load (the middleware), timer and activity ping, and transaction (`editor_transaction`) goes through
 `Gate.check`. The account it returns comes from the server's own record of the sign-in, held in NiceGUI's server-side
 storage for that browser, never from anything the request carries, and it's re-read from the production allowlist on
-every check, so deleting a row cuts off an open sign-in at once.
+every check, so deleting a row cuts off an open sign-in at once. A token in the browser's signed cookie binds the record
+to the browser that completed the sign-in: the storage id outlives sign-ins, so a kept copy of the cookie would otherwise
+come back as the next person to sign in there.
 """
 
 # Standard library imports
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -14,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Callable, MutableMapping
+  from collections.abc import Callable, Mapping, MutableMapping
 
   # Local folder imports
   from .settings import PageSettings
@@ -70,6 +73,9 @@ class SignedOutError(Exception):
 class Gate:
   """Starts, checks and ends sign-ins held in a per-browser `storage` (`app.storage.user`).
 
+  `session` is that browser's signed cookie (`request.session`, or `app.storage.browser` in a page), which carries the
+  sign-in's token.
+
   `general` (`app.storage.general`) holds each developer's database choice, which is per account (§11).
   """
 
@@ -88,20 +94,23 @@ class Gate:
     self._general = general
     self._now = now
 
-  def start(self, storage: MutableMapping[str, Any], email: str) -> None:
-    """Record a sign-in Zoho verified and the allowlist accepted."""
+  def start(self, storage: MutableMapping[str, Any], session: MutableMapping[str, Any], email: str) -> None:
+    """Record a sign-in Zoho verified and the allowlist accepted, bound to this browser's cookie."""
     now = self._now().isoformat()
+    token = secrets.token_urlsafe(16)
+    session["signin_token"] = token
     storage.pop("signed_out", None)
-    storage["signin"] = {"email": email, "started": now, "active": now}
+    storage["signin"] = {"email": email, "started": now, "active": now, "token": token}
 
-  async def check(self, storage: MutableMapping[str, Any], *, touch: bool) -> SignIn:
+  async def check(self, storage: MutableMapping[str, Any], session: Mapping[str, Any], *, touch: bool) -> SignIn:
     """The sign-in in `storage`, after the session limits and the allowlist; `touch` counts this as activity.
 
     Raises:
-      SignedOutError: There's none, or it just ended (then `storage` keeps the reason).
+      SignedOutError: There's none, it belongs to another copy of the cookie, or it just ended (then `storage` keeps
+        the reason).
     """
     record = storage.get("signin")
-    if record is None:
+    if record is None or session.get("signin_token") != record["token"]:  # a kept copy ends nothing: it just gets no sign-in
       raise SignedOutError(EndReason.NONE)
     now = self._now()
     started = datetime.fromisoformat(record["started"])
@@ -118,7 +127,7 @@ class Gate:
       raise SignedOutError(EndReason.REFUSED)
     # Re-read after the lookup: a sign-out in another tab meanwhile must not be undone by this touch.
     current = storage.get("signin")
-    if current is None or (current["email"], current["started"]) != (email, record["started"]):
+    if current is None or current["token"] != record["token"]:
       raise SignedOutError(EndReason.NONE)
     if touch:
       storage["signin"] = {**current, "active": now.isoformat()}

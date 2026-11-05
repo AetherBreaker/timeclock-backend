@@ -16,7 +16,7 @@ from .gate import Account
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import AsyncGenerator, MutableMapping
+  from collections.abc import AsyncGenerator, Mapping, MutableMapping
 
   # Local folder imports
   from .gate import Gate
@@ -85,18 +85,27 @@ class PoolAccounts:
     return None if row is None else Account(row["employee_id"], row["developer"])
 
 
+class DatabaseChangedError(Exception):
+  """The account's database is no longer the one the page shows (switched in another tab, or the developer mark went)."""
+
+
 @asynccontextmanager
-async def editor_transaction(pools: Pools, gate: Gate, storage: MutableMapping[str, Any]) -> AsyncGenerator[AsyncConnection[DictRow]]:
+async def editor_transaction(
+  pools: Pools, gate: Gate, storage: MutableMapping[str, Any], session: Mapping[str, Any], *, test_database: bool
+) -> AsyncGenerator[AsyncConnection[DictRow]]:
   """The one way page code reaches the data: the gate's check, then one transaction as the signed-in account's badge.
 
   `SET LOCAL` ends with the transaction, so a pooled connection never carries a badge into the next one. The production
   row's employee number goes to `timeclock.editor_employee_id` for the test database's self-edit check; production
-  ignores it (spec 2026-11-05 §4.6).
+  ignores it (spec 2026-11-05 §4.6). `test_database` is the database the page shows, so a save never lands in the other.
 
   Raises:
     SignedOutError: The sign-in in `storage` has ended; nothing ran.
+    DatabaseChangedError: The page shows the other database; nothing ran, and the page reloads.
   """
-  signin = await gate.check(storage, touch=True)
+  signin = await gate.check(storage, session, touch=True)
+  if signin.test_database != test_database:
+    raise DatabaseChangedError
   pool = pools.test if signin.test_database else pools.production
   async with pool.connection() as conn, conn.transaction():
     await conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(signin.email)))

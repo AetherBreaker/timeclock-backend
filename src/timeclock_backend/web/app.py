@@ -97,7 +97,7 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
       path = request.url.path
       if path not in _PUBLIC_PATHS and not path.startswith(_PUBLIC_PREFIXES):
         try:
-          request.state.signin = await gate.check(app.storage.user, touch=True)
+          request.state.signin = await gate.check(app.storage.user, request.session, touch=True)
         except SignedOutError:
           return RedirectResponse("/signin", status_code=303)
         except psycopg.OperationalError:
@@ -127,35 +127,43 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
       logger.warning("a Zoho sign-in failed", exc_info=True)
       token = {}
     userinfo = token.get("userinfo")
+    email = None if userinfo is None else userinfo.get("email")
     if userinfo is None:
-      gate.end(storage, EndReason.FAILED)
+      ended = EndReason.FAILED
+    elif userinfo.get("email_verified") is not True or not isinstance(email, str):
+      ended = EndReason.REFUSED
+    else:
+      email = email.lower()  # badges are lowercase (0014), whatever casing Zoho reports
+      try:
+        account = await accounts.lookup(email)
+      except psycopg.OperationalError:
+        logger.warning("the allowlist can't be read", exc_info=True)
+        return PlainTextResponse(text.DB_DOWN, status_code=503)
+      if account is not None:
+        gate.start(storage, request.session, email)
+        return RedirectResponse("/", status_code=303)
+      ended = EndReason.REFUSED
+    try:  # a failed reply leaves a valid sign-in alone: Back into Zoho's page replays a used state
+      await gate.check(storage, request.session, touch=False)
+    except SignedOutError, psycopg.OperationalError:
+      # In the cookie: server storage would keep a file for every cookieless request a script sends here.
+      request.session["signed_out"] = ended.value
       return RedirectResponse("/signin", status_code=303)
-    email = userinfo.get("email")
-    if userinfo.get("email_verified") is not True or not isinstance(email, str):
-      gate.end(storage, EndReason.REFUSED)
-      return RedirectResponse("/signin", status_code=303)
-    email = email.lower()  # badges are lowercase (0014), whatever casing Zoho reports
-    try:
-      account = await accounts.lookup(email)
-    except psycopg.OperationalError:
-      logger.warning("the allowlist can't be read", exc_info=True)
-      return PlainTextResponse(text.DB_DOWN, status_code=503)
-    if account is None:
-      gate.end(storage, EndReason.REFUSED)
-      return RedirectResponse("/signin", status_code=303)
-    gate.start(storage, email)
     return RedirectResponse("/", status_code=303)
 
   @ui.page("/signin", title=settings.page_name)
-  async def signin_page() -> Response | None:
+  async def signin_page(request: Request) -> Response | None:
     storage = app.storage.user
+    # The callback's reason is in the cookie, the gate's in storage. Both read before any await: the cookie can change only
+    # until the response starts.
+    from_cookie, stored = request.session.pop("signed_out", None), storage.pop("signed_out", None)
+    reason = EndReason(from_cookie or stored or EndReason.NONE)
     try:
-      await gate.check(storage, touch=False)
+      await gate.check(storage, request.session, touch=False)
     except SignedOutError, psycopg.OperationalError:
       pass
     else:
       return RedirectResponse("/", status_code=303)
-    reason = EndReason(storage.pop("signed_out", EndReason.NONE))
     ui.dark_mode(prefs()["dark"])
     with ui.column().classes("signin-card"):
       ui.element("div").classes("page-logo")
@@ -243,12 +251,14 @@ def serve() -> None:
     reload=False,
     show=False,
     storage_secret=settings.session_secret.get_secret_value(),
-    # `__Host-`: no sibling subdomain can set it (session fixation). `lax` still sends it on Zoho's redirect back.
+    # `__Host-`: no sibling subdomain can set it (session fixation). `lax` still sends it on Zoho's redirect back. It
+    # carries the browser's storage id (preferences, why a sign-in ended) and is re-sent only when changed, so it lasts
+    # Chrome's 400-day cap; the gate ends the sign-in.
     session_middleware_kwargs={
       "session_cookie": "__Host-timeclock-web",
       "https_only": True,
       "same_site": "lax",
-      "max_age": settings.session_hours * 3600,
+      "max_age": 400 * 24 * 3600,
     },
     favicon=STATIC_DIR / "SFT-Logo-June-2022-color.svg",
     uvicorn_logging_level="warning",
