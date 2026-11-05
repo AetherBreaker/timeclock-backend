@@ -22,7 +22,7 @@ BUILD_ARGS: dict[str, Any] = {}
 
 
 def page_settings(**values: object) -> PageSettings:
-  """`PageSettings` from these variables (by name) over the defaults, ignoring the environment and any `.env`."""
+  """`PageSettings` from these variables (by name), over the environment and the defaults."""
   return PageSettings.model_validate({"ALERTS_EMAIL_PWD": "test", **values})
 
 

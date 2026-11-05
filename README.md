@@ -16,6 +16,23 @@ The backend is a WireGuard spoke on the hub's tunnel, without tolerate: a lost t
 
 Coolify reaches the clocks themselves through [coolify-tunnel](https://github.com/AetherBreaker/coolify-tunnel), a separate application.
 
+## Shift corrections page
+
+The compose service `timeclock-web` runs the shift corrections page from the same image (`timeclock-web` console script, NiceGUI on port 8080, behind Coolify's proxy). Managers sign in with Zoho; only a verified email listed in `backend.editors` on `timeclock` gets in, and every page load and save checks the sign-in again. The page's PostgreSQL login, `timeclock_web`, has no password until the owner sets one, and the sidecar refuses it from anywhere but the page's address on the private `timeclock-web-db` network (`10.240.17.0/28`).
+
+| Variable | Meaning |
+| --- | --- |
+| `PAGE_PUBLIC_URL` | The page's address, e.g. `https://corrections.example.com`; Zoho redirects back to `<it>/auth/zoho` |
+| `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET` | The page's Server-based Application in Zoho's API console |
+| `PAGE_SESSION_SECRET` | 64 random characters; signs the browser sessions |
+| `TIMECLOCK_WEB_PASSWORD` | 48 random characters; the `timeclock_web` login's password |
+
+All five are required: without them the compose refuses to deploy. Setup, once:
+
+1. In Coolify, give `timeclock-web` its domain on port 8080, and register that domain in Zoho's API console with the redirect URI `https://<domain>/auth/zoho`.
+2. Set the variables above, then deploy.
+3. In the SQL editor, as `postgres` on `timeclock`: `ALTER ROLE timeclock_web PASSWORD '<TIMECLOCK_WEB_PASSWORD>'`, then add each manager: `INSERT INTO backend.editors (email, employee_id, developer) VALUES (...)`.
+
 ## Coolify environment
 
 | Variable | Meaning |
