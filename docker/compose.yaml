@@ -49,12 +49,87 @@ services:
       timeclock-postgres:
         condition: service_healthy
 
+  # The shift corrections page (spec 2026-11-05 §2), built from the backend's image. Its own service, so a fault in the
+  # public-facing part can't take down the relay or the automatic clock-out.
+  timeclock-web:
+    container_name: timeclock-web
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        GIT_REPO: https://github.com/AetherBreaker/timeclock-backend.git
+        GIT_TAG: v0.6.0
+    # Not `devkit-container run`: that runs the one run-app-* script and the tunnel, neither of which the page uses.
+    entrypoint: ["/app/.venv/bin/timeclock-web"]
+    user: "999:999"
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: timeclock-web-data
+        target: /app/web_data
+    environment:
+      - PERSISTED_DIR_LOC=/app/web_data
+      - NICEGUI_STORAGE_PATH=/app/web_data/nicegui
+      - HEARTBEAT_SLUG=timeclock-web
+      - ALERTS_EMAIL=info@sweetfiretobacco.com
+      - ALERTS_EMAIL_PWD=${ALERTS_EMAIL_PWD:?}
+      - ALERTS_RECIPIENTS=["jacob.ogden@sweetfiretobacco.com"]
+      - TZ=America/New_York
+      - LOG_CONN_HOST=central-log-server
+      - PAGE_POSTGRES_HOST=10.240.17.2  # Postgres's address on timeclock-web-db, so the page always connects over it
+      - PAGE_PUBLIC_URL=${PAGE_PUBLIC_URL:?}
+      - PAGE_SESSION_SECRET=${PAGE_SESSION_SECRET:?}
+      - TIMECLOCK_WEB_PASSWORD=${TIMECLOCK_WEB_PASSWORD:?}
+      - ZOHO_CLIENT_ID=${ZOHO_CLIENT_ID:?}
+      - ZOHO_CLIENT_SECRET=${ZOHO_CLIENT_SECRET:?}
+    networks:
+      coolify: {}
+      timeclock-web-db:
+        ipv4_address: 10.240.17.3  # named in Postgres's access rules below
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/devkit-container
+        - healthcheck
+        - --file
+        - /app/web_data/logs/heartbeat.txt
+      start_period: 60s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      timeclock-postgres:
+        condition: service_healthy
+
   # Not in [tool.docker].services: the official image, configured here so its setup lives in the
-  # repository (R26.5). Only the backend reaches it, over timeclock-db; the loopback publish is the owner's
-  # SQL editor over SSH (R30.2). Not named `postgres`: the backend also joins coolify, where Coolify's own
-  # database answers to that alias.
+  # repository (R26.5). The backend reaches it over timeclock-db, the page over timeclock-web-db; the loopback
+  # publish is the owner's SQL editor over SSH (R30.2). Not named `postgres`: the backend also joins coolify,
+  # where Coolify's own database answers to that alias.
   timeclock-postgres:
     image: postgres:18.6
+    # The client access rules, written on every start: the page's login works only from the page's own address
+    # (spec 2026-11-05 §4.8), so its password is no way around Zoho for anyone else who reaches the database, such as a
+    # clock through the relay. The rules after the first four are the image's own defaults. A quoted heredoc with no
+    # dollar sign, so neither compose nor Coolify interpolates it.
+    entrypoint:
+      - bash
+      - -c
+      - |
+        mkdir -p /etc/postgresql
+        cat > /etc/postgresql/pg_hba.conf <<'EOF'
+        host  all         timeclock_web 10.240.17.3/32 scram-sha-256
+        host  all         all           10.240.17.3/32 reject
+        host  all         timeclock_web all            reject
+        local all         timeclock_web                reject
+        local all         all                          trust
+        host  all         all           127.0.0.1/32   trust
+        host  all         all           ::1/128        trust
+        local replication all                          trust
+        host  replication all           127.0.0.1/32   trust
+        host  replication all           ::1/128        trust
+        host  all         all           all            scram-sha-256
+        EOF
+        exec docker-entrypoint.sh postgres -c hba_file=/etc/postgresql/pg_hba.conf
     restart: unless-stopped
     environment:
       - POSTGRES_DB=timeclock
@@ -67,7 +142,9 @@ services:
         bind:
           create_host_path: true
     networks:
-      - timeclock-db
+      timeclock-db: {}
+      timeclock-web-db:
+        ipv4_address: 10.240.17.2
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
@@ -81,3 +158,13 @@ networks:
   coolify:
     external: true
   timeclock-db: {}
+  # Only the page and Postgres. Both have fixed addresses: the access rules name the page's (not the range, since traffic
+  # through Postgres's published loopback port can arrive from this network's gateway), and the page connects to
+  # Postgres's, so its connections always come from its own address here even if Coolify adds a shared network of its own.
+  timeclock-web-db:
+    ipam:
+      config:
+        - subnet: 10.240.17.0/28
+
+volumes:
+  timeclock-web-data: {}
