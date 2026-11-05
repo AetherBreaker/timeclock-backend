@@ -14,6 +14,7 @@ import asyncio
 import importlib
 import os
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -22,19 +23,27 @@ os.environ.setdefault("ALERTS_EMAIL_PWD", "test")
 # A name Postgres knows as is, so tests can expect `SETTINGS.tz.key` in backend.environment. aeth_ext's default, the link
 # US/Eastern, is written as America/New_York (test_bootstrap_writes_a_link_zone_as_its_canonical_name).
 os.environ.setdefault("TZ", "America/New_York")
+# Read by NiceGUI on import: the page's tests keep its storage files out of the repo's root.
+os.environ.setdefault("NICEGUI_STORAGE_PATH", str(Path(__file__).parents[1] / ".cache" / "nicegui"))
 
 # Third party imports
+import page_sim
 import psycopg
 import pytest
+from fake_zoho import FakeZoho
+from nicegui import app
+from nicegui.testing import user_simulation
+from page_sim import FakeAccounts, FakeClock, PageUnderTest, page_settings
 from psycopg import sql
 
 # First party imports
 from timeclock_backend import databases
 from timeclock_backend.databases import Database
+from timeclock_backend.web.gate import Account
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Callable
+  from collections.abc import AsyncIterator, Callable
 
 
 def pytest_asyncio_loop_factories(config: pytest.Config, item: pytest.Item) -> dict[str, Callable[[], asyncio.AbstractEventLoop]]:
@@ -67,3 +76,21 @@ async def fresh_database(pg_server: str):
   yield database
   with psycopg.connect(pg_server, autocommit=True) as conn:
     conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(database.name)))
+
+
+@pytest.fixture
+async def page() -> AsyncIterator[PageUnderTest]:
+  """The page against a fake Zoho and a fake allowlist: ann@example.com (employee 7) and the developer dev@example.com."""
+  zoho = FakeZoho("page")
+  accounts = FakeAccounts({"ann@example.com": Account(7, developer=False), "dev@example.com": Account(None, developer=True)})
+  clock = FakeClock()
+  page_sim.BUILD_ARGS.clear()
+  page_sim.BUILD_ARGS.update(
+    settings=page_settings(ZOHO_ACCOUNTS_URL=FakeZoho.ISSUER, ZOHO_CLIENT_ID="page", PAGE_PUBLIC_URL="http://test"),
+    accounts=accounts,
+    zoho_client_kwargs={"transport": zoho.transport},
+    now=clock,
+  )
+  async with user_simulation(main_file=Path(__file__).with_name("page_main.py")) as user:
+    app.storage.general.clear()  # it's a file under NICEGUI_STORAGE_PATH, shared by every test
+    yield PageUnderTest(user, zoho, accounts, clock)
