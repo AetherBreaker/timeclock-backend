@@ -114,7 +114,7 @@ async def test_signing_out_ends_the_sign_in_for_every_tab(page: PageUnderTest) -
 
 async def test_an_open_page_leaves_when_its_sign_in_ends(page: PageUnderTest, monkeypatch: pytest.MonkeyPatch) -> None:
   # The live module: NiceGUI's test reset drops the page's modules after each simulation, and page_main.py re-imports them.
-  monkeypatch.setattr(sys.modules["timeclock_backend.web.app"], "SESSION_CHECK_SECS", 0.05)
+  monkeypatch.setattr(sys.modules["timeclock_backend.web.shell"], "SESSION_CHECK_SECS", 0.05)
   await sign_in(page)
   page.clock.advance(minutes=31)
   await page.user.should_see(IDLE)

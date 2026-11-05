@@ -71,4 +71,7 @@ async def sign_in(page: PageUnderTest, email: str | None = None) -> None:
   started = await page.user.http_client.get("/signin/zoho")
   query = authorize_query(started.headers["location"])
   page.zoho.nonce = query["nonce"]
-  await page.user.open(f"/auth/zoho?code=c&state={query['state']}")
+  # Then the page Zoho's reply redirects to, as the browser's address: NiceGUI's simulated reload re-requests the path
+  # opened, which for the reply itself would replay a used state.
+  reply = await page.user.http_client.get(f"/auth/zoho?code=c&state={query['state']}")
+  await page.user.open(reply.headers["location"])
