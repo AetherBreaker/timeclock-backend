@@ -1,15 +1,18 @@
 [project]
   name            = "timeclock-backend"
   version         = "0.6.0"
-  description     = "The time clocks' server side: the database relay, PostgreSQL and the scheduler"
+  description     = "The time clocks' server side: the database relay, PostgreSQL, the scheduler and the shift corrections page"
   readme          = "README.md"
   requires-python = ">=3.14"
   dependencies    = [
     "aeth-ext[async]>=10.0.0",
     "apscheduler>=3.11.2,<4",
+    "authlib>=1.9.5",
     "devkit-container>=2.3.1",
+    "nicegui>=3.18,<4",
     "psycopg[binary]>=3.2.10",
-    "timeclock-schema>=0.9.8",
+    "psycopg-pool>=3.3.3",
+    "timeclock-schema>=0.10.0",
     "tzdata>=2026.5",
   ]
 
@@ -28,6 +31,7 @@
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
+    "pyyaml>=6",
     "ruff>=0.15",
     "tombi>=1.5",
   ]                                   # setup-project added: "devkit-claude-hooks", "devkit-poe-complete", "poethepoet>=0.46.0", "pyright>=1.1.411", "pytest>=8.0", "pytest-asyncio>=0.24", "pytest-cov>=5.0", "ruff>=0.15", "tombi>=1.5"
