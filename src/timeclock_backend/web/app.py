@@ -1,7 +1,10 @@
-"""The page's routes and pages (spec 2026-11-05 §3), registered on NiceGUI's app by `build`."""
+"""The page's routes and pages (spec 2026-11-05 §3), registered on NiceGUI's app by `build`; `serve` runs them."""
 
 # Standard library imports
+import asyncio
+import contextlib
 import logging
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, override
@@ -9,6 +12,10 @@ from urllib.parse import quote
 
 # Third party imports
 import psycopg
+import uvicorn
+from aeth_ext.errors import install_loop_exception_handler, trigger_shutdown
+from aeth_ext.errors.shutdown import ShutdownPhase, register_for_shutdown
+from aeth_ext.monitoring import run_heartbeat_async
 from authlib.integrations.starlette_client import OAuth
 from nicegui import app, ui
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -17,19 +24,20 @@ from starlette.responses import PlainTextResponse, RedirectResponse, Response
 
 # Local folder imports
 from . import text
+from .db import PoolAccounts, Pools
 from .gate import EndReason, Gate, SignedOutError
+from .settings import PageSettings
 from .shell import frame, prefs
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Callable, Mapping
+  from collections.abc import Callable, Coroutine, Generator, Mapping
 
   # Third party imports
   from starlette.middleware.base import RequestResponseEndpoint
 
   # Local folder imports
   from .gate import Accounts, SignIn
-  from .settings import PageSettings
 
 logger = logging.getLogger(__name__)
 
@@ -170,3 +178,79 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
     with ui.column().classes("page-body"):
       ui.label(f"Signed in as {signin.email}").mark("signed-in-as")
       ui.label("Shifts and employees will appear here.")
+
+
+@contextlib.contextmanager
+def _no_signal_capture(_server: uvicorn.Server) -> Generator[None]:
+  # aeth_ext's signal handlers drive the shutdown; uvicorn's own capture would take the signals from them (as the clock).
+  yield
+
+
+def serve() -> None:
+  """Build the page from the environment and run NiceGUI until the shutdown stops it.
+
+  Raises:
+    ValueError: A setting the page can't run without is empty.
+  """
+  settings = PageSettings.get_settings()
+  required = {
+    "PAGE_SESSION_SECRET": settings.session_secret.get_secret_value(),
+    "TIMECLOCK_WEB_PASSWORD": settings.db_password.get_secret_value(),
+    "ZOHO_CLIENT_ID": settings.zoho_client_id,
+    "ZOHO_CLIENT_SECRET": settings.zoho_client_secret.get_secret_value(),
+  }
+  if missing := [name for name, value in required.items() if not value]:
+    raise ValueError(f"the page can't start without {', '.join(missing)}")
+  # Socket logging creates no logs folder, and the page's volume starts empty; the healthcheck reads the heartbeat there.
+  settings.log_loc_folder.mkdir(parents=True, exist_ok=True)
+  pools = Pools.create(settings)
+  # asyncio holds tasks weakly, so the heartbeat is kept here, and its failure shuts the page down (as the clock).
+  running: set[asyncio.Future[Any]] = set()
+
+  def keep(name: str, coro: Coroutine[Any, Any, Any]) -> None:
+    fut = asyncio.ensure_future(coro)
+    running.add(fut)
+
+    def done(f: asyncio.Future[Any]) -> None:
+      running.discard(f)
+      if not f.cancelled() and (exc := f.exception()) is not None:
+        trigger_shutdown(f"{name} stopped", "".join(traceback.format_exception(exc)))
+
+    fut.add_done_callback(done)
+
+  async def startup() -> None:
+    install_loop_exception_handler()
+    await pools.open()
+    heartbeat = run_heartbeat_async(
+      settings.log_loc_folder / "heartbeat.txt",
+      ping_url=settings.alerts_healthcheck_ping_url,
+      pingkey=settings.alerts_healthcheck_pingkey,
+      tz=settings.tz,
+    )
+    keep("Heartbeat", heartbeat)
+
+  app.on_startup(lambda: keep("Startup", startup()))  # through keep: NiceGUI would only log the exception
+  app.on_shutdown(pools.close)
+  # A plain lambda: aeth_ext holds bound methods weakly. app.shutdown() sets uvicorn's should_exit.
+  register_for_shutdown(lambda _trails: app.shutdown(), phase=ShutdownPhase.THREADED)
+  uvicorn.Server.capture_signals = _no_signal_capture  # pyright: ignore[reportAttributeAccessIssue]  # as the clock
+  build(settings, PoolAccounts(pools))
+  ui.run(
+    host="0.0.0.0",  # Coolify's proxy reaches it over the coolify network
+    port=settings.port,
+    title=settings.page_name,
+    dark=True,
+    reload=False,
+    show=False,
+    storage_secret=settings.session_secret.get_secret_value(),
+    # `__Host-`: no sibling subdomain can set it (session fixation). `lax` still sends it on Zoho's redirect back.
+    session_middleware_kwargs={
+      "session_cookie": "__Host-timeclock-web",
+      "https_only": True,
+      "same_site": "lax",
+      "max_age": settings.session_hours * 3600,
+    },
+    favicon=STATIC_DIR / "SFT-Logo-June-2022-color.svg",
+    uvicorn_logging_level="warning",
+    log_config=None,  # passed to uvicorn.Config; its dictConfig would close aeth_ext's handlers
+  )
