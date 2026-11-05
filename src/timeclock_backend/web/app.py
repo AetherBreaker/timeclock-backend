@@ -18,6 +18,7 @@ from starlette.responses import PlainTextResponse, RedirectResponse, Response
 # Local folder imports
 from . import text
 from .gate import EndReason, Gate, SignedOutError
+from .shell import frame, prefs
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -33,8 +34,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 STATIC_DIR: Final = Path(__file__).with_name("static")
-# How often an open page checks its sign-in without counting as activity, so it leaves soon after the sign-in ends.
-SESSION_CHECK_SECS = 30
 _PUBLIC_PATHS: Final = frozenset({"/signin", "/signin/zoho", "/auth/zoho"})
 _PUBLIC_PREFIXES: Final = ("/static/", "/_nicegui")  # the page's files and NiceGUI's (its assets and socket)
 # Activity in the browser, at most once a minute, so working in a page without loading another keeps the sign-in.
@@ -149,6 +148,7 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
     else:
       return RedirectResponse("/", status_code=303)
     reason = EndReason(storage.pop("signed_out", EndReason.NONE))
+    ui.dark_mode(prefs()["dark"])
     with ui.column().classes("signin-card"):
       ui.element("div").classes("page-logo")
       ui.label(settings.page_name).classes("signin-title")
@@ -166,27 +166,7 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
   @ui.page("/", title=settings.page_name)
   async def home_page(request: Request) -> None:
     signin: SignIn = request.state.signin
-
-    def sign_out() -> None:
-      gate.end(app.storage.user, EndReason.SIGNED_OUT)
-      ui.navigate.to("/signin")
-
-    leaving = False
-
-    async def leave_if_ended(*, touch: bool) -> None:
-      nonlocal leaving
-      if leaving:  # a second navigation would land after the first and lose the reason the sign-in page shows
-        return
-      try:
-        await gate.check(app.storage.user, touch=touch)
-      except SignedOutError:
-        leaving = True
-        ui.navigate.to("/signin")
-      except psycopg.OperationalError:
-        logger.warning("the allowlist can't be read", exc_info=True)  # keep the page; the next check tries again
-
-    ui.label(f"Signed in as {signin.email}").mark("signed-in-as")
-    ui.label("Shifts and employees will appear here.")
-    ui.button("Sign out", on_click=sign_out).mark("signout")
-    ui.timer(SESSION_CHECK_SECS, lambda: leave_if_ended(touch=False), immediate=False)  # the page load just checked
-    ui.on("page_activity", lambda: leave_if_ended(touch=True))
+    frame(signin, settings, gate)
+    with ui.column().classes("page-body"):
+      ui.label(f"Signed in as {signin.email}").mark("signed-in-as")
+      ui.label("Shifts and employees will appear here.")

@@ -1,1 +1,210 @@
-/* The page's look (spec 2026-11-05 §2): every color, the logo and the icons. Filled in with the shell. */
+/* The page's look (spec 2026-11-05 §2): every color, the logos and the icon glyphs live here, so a new look is an
+   edit to this file. The Python and JavaScript use only these class names and variables. */
+
+:root {
+  /* The SFT palette, as the clock's. */
+  --sft-yellow: #F9E60D;
+  --sft-red: #ED1A2C;
+  --sft-black: #161514;
+  --sft-white: #FFFFFF;
+  --sft-green: #2E7D32;
+  --sft-blue: #298DF0;
+  --sft-orange: #FB8C00;
+
+  /* Quasar's brand colors, set here rather than through ui.colors(). */
+  --q-primary: var(--sft-yellow);
+  --q-secondary: var(--sft-blue);
+  --q-accent: var(--sft-orange);
+  --q-positive: var(--sft-green);
+  --q-negative: var(--sft-red);
+  --q-info: var(--sft-blue);
+  --q-warning: var(--sft-orange);
+  --q-dark: #1e1e1c;
+  --q-dark-page: #121211;
+}
+
+body.body--dark {
+  --page-bg: #121211;
+  --surface: #1e1e1c;
+  --surface2: #2a2a27;
+  --text: #ececea;
+  --muted: #a3a3a0;
+  --line: #34342f;
+  --header-bg: #191917;
+  --shadow: rgba(0, 0, 0, 0.55);
+}
+
+body.body--light {
+  --page-bg: #f5f5f3;
+  --surface: #ffffff;
+  --surface2: #f3f3f3;
+  --text: #1d1d1b;
+  --muted: #6b6b6b;
+  --line: #e3e3e3;
+  --header-bg: #ffffff;
+  --shadow: rgba(0, 0, 0, 0.15);
+}
+
+body {
+  background: var(--page-bg);
+  color: var(--text);
+  font-family: Roboto, Arial, sans-serif;
+  font-size: 14px;
+  --top-line: var(--sft-yellow);
+}
+
+/* The test database (§12): the top bar's yellow line turns orange, under a striped banner. */
+body.test-database {
+  --top-line: var(--sft-orange);
+}
+
+.test-banner {
+  width: 100%;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 12px;
+  background: repeating-linear-gradient(-45deg, var(--sft-orange), var(--sft-orange) 14px, #f39200 14px, #f39200 28px);
+  color: var(--sft-black);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.3px;
+}
+
+.test-banner .q-btn {
+  color: var(--sft-black);
+  text-decoration: underline;
+  font-weight: 500;
+}
+
+/* Primary buttons: yellow with black text. */
+.q-btn.bg-primary {
+  color: var(--sft-black) !important;
+}
+
+/* Top bar */
+.page-header {
+  width: 100%;
+  height: 58px;
+  align-items: center;
+  gap: 16px;
+  padding: 0 18px;
+  background: var(--header-bg);
+  border-bottom: 3px solid var(--top-line);
+  flex-wrap: nowrap;
+}
+
+.page-logo {
+  width: 96px;
+  height: 32px;
+  background: url("/static/SFT-Logo-June-2022-color.svg") left center / contain no-repeat;
+}
+
+.page-name {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.page-account {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.page-gear,
+.page-signout {
+  color: var(--text);
+}
+
+.page-body {
+  padding: 18px 22px;
+}
+
+/* Icons: an element with these classes; the glyph is chosen here (Material Icons, which Quasar loads). */
+.page-icon::before {
+  font-family: "Material Icons";
+  font-size: 22px;
+  line-height: 1;
+  font-feature-settings: "liga";
+  -webkit-font-feature-settings: "liga";
+}
+
+.icon-gear::before {
+  content: "settings";
+}
+
+.icon-signout::before {
+  content: "logout";
+  font-size: 18px;
+  margin-right: 6px;
+}
+
+/* The settings bubble */
+.page-bubble {
+  width: 300px;
+  padding: 14px 16px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px var(--shadow);
+}
+
+.bubble-heading {
+  margin: 0 0 4px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.bubble-note,
+.signin-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* The sign-in page */
+.signin-card {
+  max-width: 420px;
+  margin: 12vh auto 0;
+  padding: 28px 32px;
+  gap: 16px;
+  align-items: center;
+  background: var(--surface);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px var(--shadow);
+}
+
+.signin-card .page-logo {
+  width: 160px;
+  height: 54px;
+  background-position: center;
+}
+
+.signin-title {
+  font-weight: 700;
+  font-size: 20px;
+}
+
+.signin-message {
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* Zoho's sign-in button, with Zoho's own logo (owner: Zoho's branding). */
+.zoho-signin {
+  background: var(--sft-white) !important;
+  color: var(--sft-black) !important;
+  border: 1px solid var(--line);
+  text-transform: none;
+  font-weight: 500;
+  gap: 10px;
+}
+
+.zoho-logo {
+  display: inline-block;
+  width: 46px;
+  height: 20px;
+  margin-right: 10px;
+  background: url("/static/zoho-logo.svg") center / contain no-repeat;
+}
