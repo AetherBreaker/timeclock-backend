@@ -1,4 +1,4 @@
-"""Startup bootstrap: create both databases, apply the schema's migrations, set up the clock group roles."""
+"""Startup bootstrap: create both databases, apply the schema's migrations, mark which is production, open them up."""
 
 # Standard library imports
 import asyncio
@@ -86,9 +86,9 @@ async def postgres_zone_name(conn: AsyncConnection[DictRow], key: str) -> str:
 
 
 async def bootstrap(databases: Sequence[Database] = DATABASES, *, attempts: int = 30, delay: float = 2.0) -> None:
-  """Create, migrate and open up `databases`; idempotent, so it runs on every start.
+  """Create, migrate and open up `databases` to the clock groups and the page's login; idempotent, so it runs on every start.
 
-  Clock logins are created by the owner by hand (§4.4), never here.
+  Clock logins are created by the owner by hand (§4.4), never here, and so is the page login's password.
 
   Args:
     databases: The databases to prepare.
@@ -123,7 +123,16 @@ async def bootstrap(databases: Sequence[Database] = DATABASES, *, attempts: int 
           "WHERE backend.environment.tz IS DISTINCT FROM EXCLUDED.tz",
           (run_zone,),
         )
+        # No row also counts as production (0014). A production snapshot restored into timeclock_test carries its row
+        # along, so it counts as production there until the next start rewrites it.
+        await conn.execute(
+          "INSERT INTO backend.deployment (production) VALUES (%s) ON CONFLICT (id) DO UPDATE SET production = EXCLUDED.production",
+          (database.production,),
+        )
 
+    # The page's login (0014). Its password is set by the owner by hand, since it's kept only in the page's settings
+    # (spec 2026-11-05 §4.8); with none set it can't sign in.
+    await maintenance.execute("ALTER ROLE timeclock_web LOGIN")
     for database in databases:
       group, name = sql.Identifier(database.clock_group), sql.Identifier(database.name)
       cursor = await maintenance.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (database.clock_group,))
@@ -133,3 +142,4 @@ async def bootstrap(databases: Sequence[Database] = DATABASES, *, attempts: int 
       # No role but `postgres` may create temporary tables (schema review, 2026-10-26).
       await maintenance.execute(sql.SQL("REVOKE CONNECT, TEMPORARY ON DATABASE {} FROM PUBLIC").format(name))
       await maintenance.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(name, group))
+      await maintenance.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO timeclock_web").format(name))

@@ -15,13 +15,17 @@ from .settings import SETTINGS
 
 @dataclass(frozen=True, slots=True)
 class Database:
-  """One served database and the role its clocks log in through."""
+  """One served database, the role its clocks log in through, and whether it's production (`backend.deployment`)."""
 
   name: str
   clock_group: str
+  production: bool
 
 
-DATABASES: Final = (Database("timeclock", "timeclock_clocks"), Database("timeclock_test", "timeclock_test_clocks"))
+DATABASES: Final = (
+  Database("timeclock", "timeclock_clocks", production=True),
+  Database("timeclock_test", "timeclock_test_clocks", production=False),
+)
 
 # Not `Final`: tests point it at a throwaway server. Names no database; `connect` adds one.
 SERVER_CONNINFO = make_conninfo(
