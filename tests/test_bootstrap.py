@@ -21,8 +21,8 @@ from timeclock_backend.settings import SETTINGS
 
 def _two_databases() -> tuple[Database, Database]:
   return (
-    Database(f"tcb_{uuid4().hex[:12]}", "timeclock_clocks"),
-    Database(f"tcb_{uuid4().hex[:12]}", "timeclock_test_clocks"),
+    Database(f"tcb_{uuid4().hex[:12]}", "timeclock_clocks", production=True),
+    Database(f"tcb_{uuid4().hex[:12]}", "timeclock_test_clocks", production=False),
   )
 
 
@@ -113,7 +113,7 @@ async def test_connect_follows_the_clock_group(pg_server: str) -> None:
 async def test_bootstrap_gives_up_after_its_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
   monkeypatch.setattr(databases, "SERVER_CONNINFO", "host=127.0.0.1 port=1 user=postgres password=x connect_timeout=1")
   with pytest.raises(psycopg.OperationalError):
-    await bootstrap([Database("tcb_never", "timeclock_clocks")], attempts=2, delay=0)
+    await bootstrap([Database("tcb_never", "timeclock_clocks", production=True)], attempts=2, delay=0)
 
 
 async def test_bootstrap_writes_a_link_zone_as_its_canonical_name(fresh_database: Database, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -131,3 +131,37 @@ async def test_bootstrap_fails_on_a_zone_postgres_has_no_name_for(fresh_database
   monkeypatch.setattr(bootstrap_module, "SETTINGS", SimpleNamespace(tz=SimpleNamespace(key="Nowhere/Fictional")))
   with pytest.raises(ValueError, match="Nowhere/Fictional"):
     await bootstrap([fresh_database])
+
+
+async def test_bootstrap_marks_which_database_is_production(pg_server: str) -> None:
+  prod, test = _two_databases()
+  deployment = "SELECT production FROM backend.deployment"
+  try:
+    await bootstrap([prod, test])
+    async with await connect(prod.name) as conn:
+      assert await (await conn.execute(deployment)).fetchall() == [{"production": True}]
+    async with await connect(test.name) as conn:
+      assert await (await conn.execute(deployment)).fetchall() == [{"production": False}]
+      await conn.execute("UPDATE backend.deployment SET production = true")
+      await conn.commit()
+    await bootstrap([prod, test])
+    async with await connect(test.name) as conn:
+      assert await (await conn.execute(deployment)).fetchall() == [{"production": False}]
+  finally:
+    _drop_databases(pg_server, prod.name, test.name)
+
+
+async def test_bootstrap_lets_the_page_login_connect_but_sets_no_password(pg_server: str, fresh_database: Database) -> None:
+  password = "SELECT rolpassword FROM pg_authid WHERE rolname = 'timeclock_web'"
+  await bootstrap([fresh_database])  # creates timeclock_web (0014)
+  with psycopg.connect(pg_server, autocommit=True) as admin:
+    admin.execute("ALTER ROLE timeclock_web NOLOGIN PASSWORD 'before'")
+    before = admin.execute(password).fetchone()
+    admin.execute(sql.SQL("REVOKE CONNECT ON DATABASE {} FROM timeclock_web").format(sql.Identifier(fresh_database.name)))
+  await bootstrap([fresh_database])
+  with psycopg.connect(pg_server, autocommit=True) as admin:
+    assert admin.execute("SELECT rolcanlogin FROM pg_roles WHERE rolname = 'timeclock_web'").fetchone() == (True,)
+    assert admin.execute(password).fetchone() == before
+    privilege = "SELECT has_database_privilege('timeclock_web', %s, %s)"
+    assert admin.execute(privilege, (fresh_database.name, "CONNECT")).fetchone() == (True,)
+    assert admin.execute(privilege, (fresh_database.name, "TEMPORARY")).fetchone() == (False,)

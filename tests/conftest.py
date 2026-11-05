@@ -63,7 +63,7 @@ def pg_server(monkeypatch: pytest.MonkeyPatch) -> str:
 @pytest.fixture
 async def fresh_database(pg_server: str):
   """A uniquely named database (not yet created), force-dropped afterwards."""
-  database = Database(f"tcb_{uuid4().hex[:12]}", "timeclock_clocks")
+  database = Database(f"tcb_{uuid4().hex[:12]}", "timeclock_clocks", production=True)
   yield database
   with psycopg.connect(pg_server, autocommit=True) as conn:
     conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(database.name)))

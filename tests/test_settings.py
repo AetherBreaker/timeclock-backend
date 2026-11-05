@@ -18,7 +18,10 @@ def test_settings_defaults():
 
 
 def test_databases_and_their_groups():
-  assert DATABASES == (Database("timeclock", "timeclock_clocks"), Database("timeclock_test", "timeclock_test_clocks"))
+  assert DATABASES == (
+    Database("timeclock", "timeclock_clocks", production=True),
+    Database("timeclock_test", "timeclock_test_clocks", production=False),
+  )
 
 
 def test_server_conninfo_never_names_a_database():
