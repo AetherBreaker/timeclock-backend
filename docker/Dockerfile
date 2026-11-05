@@ -82,6 +82,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends wireguard-tools
 
 # Project additions to the final stage; setup-project renders the template around this window.
 # !window final:
+# The page's sessions (timeclock-web). A new named volume copies this folder's owner, so the page, run as 999 without
+# devkit-container's chown, can write there.
+RUN install -d -o 999 -g 999 /app/web_data
 # !end final
 
 WORKDIR /app
