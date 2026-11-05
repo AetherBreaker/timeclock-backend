@@ -43,12 +43,16 @@ def frame(signin: SignIn, settings: PageSettings, gate: Gate) -> None:  # noqa: 
     if leaving:  # a second navigation would land after the first and lose the reason the sign-in page shows
       return
     try:
-      await gate.check(app.storage.user, touch=touch)
+      current = await gate.check(app.storage.user, app.storage.browser, touch=touch)
     except SignedOutError:
       leaving = True
       ui.navigate.to("/signin")
     except psycopg.OperationalError:
       logger.warning("the allowlist can't be read", exc_info=True)  # keep the page; the next check tries again
+    else:
+      if current.test_database != signin.test_database:  # switched in another tab, or the developer mark went
+        leaving = True
+        ui.navigate.reload()
 
   def sign_out() -> None:
     gate.end(app.storage.user, EndReason.SIGNED_OUT)

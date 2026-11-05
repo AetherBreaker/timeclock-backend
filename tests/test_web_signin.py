@@ -1,12 +1,15 @@
 """Tests for signing in with Zoho, and the gate on every page load (spec 2026-11-05 §3)."""
 
 # Standard library imports
+import asyncio
 import sys
 import time
 
 # Third party imports
+import httpx
 import psycopg
 import pytest
+from nicegui import app, background_tasks
 from page_sim import PageUnderTest, authorize_query, sign_in
 
 # First party imports
@@ -110,6 +113,35 @@ async def test_signing_out_ends_the_sign_in_for_every_tab(page: PageUnderTest) -
   await page.user.should_see(text.SIGNED_OUT)
   await page.user.open("/")  # the same cookies, as another tab would send
   await page.user.should_see(SIGN_IN_BUTTON)
+
+
+async def test_a_kept_cookie_does_not_come_back_with_the_next_sign_in(page: PageUnderTest) -> None:
+  await sign_in(page)
+  kept = httpx.Cookies(page.user.http_client.cookies)  # copied off a shared computer
+  page.user.find(marker="signout").click()
+  await page.user.should_see(text.SIGNED_OUT)
+  await sign_in(page, "dev@example.com")  # the next person, in the same browser
+  page.user.http_client.cookies = kept
+  response = await page.user.http_client.get("/")
+  assert (response.status_code, response.headers["location"]) == (303, "/signin")
+
+
+async def test_a_failed_callback_leaves_a_valid_sign_in_alone(page: PageUnderTest) -> None:
+  await sign_in(page)
+  reply = await page.user.http_client.get("/auth/zoho?code=c&state=used")  # Back into Zoho's page replays a used state
+  assert reply.headers["location"] == "/"
+  await page.user.open("/")
+  await page.user.should_see("Signed in as ann@example.com")
+
+
+async def test_a_callback_without_a_cookie_stores_nothing_on_the_server(page: PageUnderTest) -> None:
+  before = set(app.storage.path.glob("storage-user-*.json"))
+  for _ in range(3):
+    page.user.http_client.cookies.clear()  # each a new browser, as a script's requests are
+    reply = await page.user.http_client.get("/auth/zoho?code=c&state=x")
+    assert reply.headers["location"] == "/signin"
+  await asyncio.gather(*background_tasks.lazy_tasks_running.values())  # NiceGUI's storage file writes
+  assert set(app.storage.path.glob("storage-user-*.json")) == before
 
 
 async def test_an_open_page_leaves_when_its_sign_in_ends(page: PageUnderTest, monkeypatch: pytest.MonkeyPatch) -> None:

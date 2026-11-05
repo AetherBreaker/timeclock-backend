@@ -65,7 +65,7 @@ def test_serve_runs_nicegui_with_secure_session_cookies(monkeypatch: pytest.Monk
     "session_cookie": "__Host-timeclock-web",
     "https_only": True,
     "same_site": "lax",
-    "max_age": 8 * 3600,
+    "max_age": 400 * 24 * 3600,  # the browser's storage id; the gate ends the sign-in
   }
 
 
