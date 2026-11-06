@@ -193,6 +193,26 @@ def test_records_turn_a_draft_into_amends_voids_and_inserts() -> None:
   ]
 
 
+def test_an_amend_names_every_field_that_differs_from_the_original() -> None:
+  # The database applies a punch's newest correction alone, over the original (apply_corrections).
+  fixed = _p(OUT, "17:05", original_at=_at("23:00"), version=uuid4())  # an automatic clock-out fixed to 5:05 PM
+  retyped = _p(BREAK_START, "10:00", original_kind=OUT, version=uuid4())
+  restored = _p(OUT, "17:05", original_at=_at("23:00"), version=uuid4())
+  base = {p.id: p for p in (fixed, retyped, restored)}
+  draft = [_draft(fixed, kind=BREAK_START), _draft(retyped, at=_at("10:05")), _draft(restored, at=_at("23:00"))]
+  assert records(base, draft) == [
+    Record(RecordAction.AMEND, fixed.id, BREAK_START, _at("17:05")),
+    Record(RecordAction.AMEND, retyped.id, BREAK_START, _at("10:05")),
+    Record(RecordAction.AMEND, restored.id, None, _at("23:00")),
+  ]
+
+
+def test_apply_reads_an_amend_over_the_original_as_the_database_does() -> None:
+  fixed = _p(OUT, "17:05", original_at=_at("23:00"), version=uuid4())
+  [after] = apply([fixed], [Record(RecordAction.AMEND, fixed.id, BREAK_START, None)])
+  assert (after.kind, after.at) == (BREAK_START, _at("23:00"))
+
+
 def test_conflicts_are_touched_punches_someone_else_changed() -> None:
   changed, gone, same = _p(IN, "7:00", version=uuid4()), _p(OUT, "15:00"), _p(BREAK_START, "9:00")
   base = {changed.id: changed, same.id: same}

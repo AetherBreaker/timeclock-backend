@@ -221,7 +221,11 @@ class RecordAction(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Record:
-  """One row a save writes: an AMEND names only what changed (Mark as correct names the unchanged time), an INSERT both."""
+  """One row a save writes: an INSERT names both, an AMEND what differs from the punch's original (None: the original's).
+
+  The database applies a punch's newest correction alone, over the original (`apply_corrections`), so an amend restates
+  any earlier correction it keeps; one back to the original names the original time, as an amend must name something.
+  """
 
   action: RecordAction
   punch_id: UUID
@@ -237,8 +241,7 @@ def conflicts(base: Mapping[UUID, PagePunch], draft: Iterable[DraftPunch]) -> li
 def records(base: Mapping[UUID, PagePunch], draft: Iterable[DraftPunch]) -> list[Record]:
   """The rows a draft writes against `base`, in draft order; `conflicts` must be empty first.
 
-  Mark as correct is an amend to the same time: `punch_corrections` wants a new value, and one row then tells who
-  confirmed it (spec §6.3).
+  Mark as correct is an amend to the same values: one row then tells who confirmed it (spec §6.3).
   """
   found: list[Record] = []
   for d in draft:
@@ -249,10 +252,10 @@ def records(base: Mapping[UUID, PagePunch], draft: Iterable[DraftPunch]) -> list
     was = base[d.id]
     if d.removed:
       found.append(Record(RecordAction.VOID, d.id, None, None))
-    elif d.kind != was.kind or d.at != was.at:
-      found.append(Record(RecordAction.AMEND, d.id, d.kind if d.kind != was.kind else None, d.at if d.at != was.at else None))
-    elif d.confirmed:
-      found.append(Record(RecordAction.AMEND, d.id, None, was.at))
+    elif d.kind != was.kind or d.at != was.at or d.confirmed:
+      kind = d.kind if d.kind != was.original_kind else None
+      at = d.at if d.at != was.original_at else None
+      found.append(Record(RecordAction.AMEND, d.id, kind, was.original_at if kind is None and at is None else at))
   return found
 
 
@@ -263,11 +266,10 @@ def apply(base: Sequence[PagePunch], records: Iterable[Record]) -> list[PagePunc
     match r.action:
       case RecordAction.VOID:
         del by_id[r.punch_id]
-      case RecordAction.AMEND:
+      case RecordAction.AMEND:  # over the original, as the database applies it
         was = by_id[r.punch_id]
-        by_id[r.punch_id] = replace(
-          was, kind=was.kind if r.kind is None else r.kind, at=was.at if r.at is None else r.at, version=PENDING
-        )
+        kind, at = was.original_kind if r.kind is None else r.kind, was.original_at if r.at is None else r.at
+        by_id[r.punch_id] = replace(was, kind=kind, at=at, version=PENDING)
       case RecordAction.INSERT:
         assert r.kind is not None and r.at is not None  # an INSERT names both
         by_id[r.punch_id] = PagePunch(

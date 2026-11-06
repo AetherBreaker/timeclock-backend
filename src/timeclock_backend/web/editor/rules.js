@@ -232,6 +232,7 @@ export function conflicts(base, draft) {
   return draft.filter((d) => !d.new && (!Object.hasOwn(base, d.id) || base[d.id].version !== d.version)).map((d) => d.id);
 }
 
+// An amend names what differs from the punch's original: the database applies the newest correction alone, over it.
 export function records(base, draft) {
   const found = [];
   for (const d of draft) {
@@ -241,9 +242,11 @@ export function records(base, draft) {
     }
     const was = base[d.id];
     if (d.removed) found.push({ action: "void", punchId: d.id, kind: null, at: null });
-    else if (d.kind !== was.kind || d.at !== was.at) {
-      found.push({ action: "amend", punchId: d.id, kind: d.kind !== was.kind ? d.kind : null, at: d.at !== was.at ? d.at : null });
-    } else if (d.confirmed) found.push({ action: "amend", punchId: d.id, kind: null, at: was.at });
+    else if (d.kind !== was.kind || d.at !== was.at || d.confirmed) {
+      const kind = d.kind !== was.originalKind ? d.kind : null;
+      const at = d.at !== was.originalAt ? d.at : null;
+      found.push({ action: "amend", punchId: d.id, kind, at: kind === null && at === null ? was.originalAt : at });
+    }
   }
   return found;
 }
@@ -254,7 +257,8 @@ export function applyRecords(base, records) {
     if (r.action === "void") byId.delete(r.punchId);
     else if (r.action === "amend") {
       const was = byId.get(r.punchId);
-      byId.set(r.punchId, { ...was, kind: r.kind === null ? was.kind : r.kind, at: r.at === null ? was.at : r.at, version: PENDING });
+      const kind = r.kind === null ? was.originalKind : r.kind;
+      byId.set(r.punchId, { ...was, kind, at: r.at === null ? was.originalAt : r.at, version: PENDING });
     } else {
       byId.set(r.punchId, {
         id: r.punchId,

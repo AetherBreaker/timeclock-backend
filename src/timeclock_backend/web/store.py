@@ -169,7 +169,7 @@ def window_token(punches: Iterable[PagePunch]) -> str:
 
 @dataclass(frozen=True, slots=True)
 class HistoryChange:
-  """One punch's change: an AMEND's old values are the punch's before it; an INSERT has only new ones."""
+  """One punch's change: the punch's kind and time before it and after it (an INSERT has no before, a VOID no after)."""
 
   punch_id: UUID
   action: RecordAction
@@ -224,15 +224,18 @@ async def load_history(conn: AsyncConnection[DictRow], *, employee_id: int, star
   for c in corrections:
     by_punch.setdefault(c["punch_id"], []).append(c)
   for p in punches:
-    kind, at = PunchKind(p["kind"]), p["at"]
+    original_kind, original_at = PunchKind(p["kind"]), p["at"]
+    kind, at = original_kind, original_at
     if p["edit_id"] is not None:
       saves.setdefault(p["edit_id"], []).append((p["at"], HistoryChange(p["id"], RecordAction.INSERT, None, None, kind, at, None)))
     for c in by_punch.get(p["id"], []):
       action = RecordAction(c["action"])
-      new_kind = None if c["new_kind"] is None else PunchKind(c["new_kind"])
-      change = HistoryChange(p["id"], action, kind, at, new_kind, c["new_at"], c["id"])
+      # Each correction replaces the one before, over the original (apply_corrections).
+      new_kind = None if action is RecordAction.VOID else PunchKind(c["new_kind"] or original_kind)
+      new_at = None if action is RecordAction.VOID else c["new_at"] or original_at
+      change = HistoryChange(p["id"], action, kind, at, new_kind, new_at, c["id"])
       if action is RecordAction.AMEND:
-        kind, at = new_kind or kind, c["new_at"] or at
+        kind, at = new_kind, new_at
       if c["edit_id"] is None:
         items.append(HistoryItem(c["recorded_at"], c["db_login"], c["note"], (change,), None))
       else:

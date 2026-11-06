@@ -154,6 +154,29 @@ async def test_history_lists_each_save_with_old_and_new_values(pages_db: PagesDb
   assert (page.who, page.note, page.edit_id) == (pages_db.email, "left at 3:30", edit)
   assert [(c.punch_id, c.action, c.old_at, c.new_kind, c.new_at) for c in page.changes] == [
     (added, RecordAction.INSERT, None, PunchKind.BREAK_START, _ny(3, "10:00")),
-    (out, RecordAction.AMEND, _ny(3, "15:00"), None, _ny(3, "15:30")),
+    (out, RecordAction.AMEND, _ny(3, "15:00"), PunchKind.CLOCK_OUT, _ny(3, "15:30")),
     (stray, RecordAction.VOID, _ny(3, "17:00"), None, None),
   ]
+
+
+async def test_history_reads_each_correction_over_the_original(pages_db: PagesDb) -> None:
+  # Only a punch's newest correction counts, over its original: a retyping after a move puts the time back.
+  bob = pages_db.employees[1]
+  out = pages_db.punch(bob, "clock_out", _ny(3, "23:00"), automatic=True)
+  pages_db.correct(out, "amend", new_at=_ny(3, "17:05"))
+  pages_db.correct(out, "amend", new_kind="break_start")
+  async with _as_badge(pages_db) as conn:
+    history = await load_history(conn, employee_id=bob, start=_ny(3, "00:00"), end=_ny(4, "00:00"))
+  retyped, moved = (item.changes[0] for item in history)
+  assert (moved.old_kind, moved.old_at, moved.new_kind, moved.new_at) == (
+    PunchKind.CLOCK_OUT,
+    _ny(3, "23:00"),
+    PunchKind.CLOCK_OUT,
+    _ny(3, "17:05"),
+  )
+  assert (retyped.old_kind, retyped.old_at, retyped.new_kind, retyped.new_at) == (
+    PunchKind.CLOCK_OUT,
+    _ny(3, "17:05"),
+    PunchKind.BREAK_START,
+    _ny(3, "23:00"),
+  )
