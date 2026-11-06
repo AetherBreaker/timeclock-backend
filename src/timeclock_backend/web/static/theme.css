@@ -729,6 +729,36 @@ table.sh td .chip {
   font-style: italic;
 }
 
+.employee-editor .clash .q-field__control::before {
+  border-color: var(--sft-red);
+  border-width: 2px;
+}
+
+.employee-editor .q-toggle.clash .q-toggle__label {
+  color: var(--chip-red);
+}
+
+.employee-editor .clash-pick {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.employee-editor .offline-note {
+  display: none;
+  color: var(--chip-orange);
+}
+
+body.page-offline .employee-editor .offline-note {
+  display: block;
+}
+
+body.page-offline .offline-inert {
+  opacity: 0.6;
+}
+
 /* NiceGUI's own connection popup gives way to the top bar's chip (spec §6.2). */
 #popup.nicegui-error-popup {
   display: none !important;

@@ -55,7 +55,8 @@ _TEST_FORM_BYTES: Final = 4096
 _PUBLIC_PATHS: Final = frozenset({"/signin", "/signin/zoho", "/auth/zoho", "/signin/test", "/favicon.ico"})
 _PUBLIC_PREFIXES: Final = ("/static/", "/_nicegui")  # the page's files and NiceGUI's (its assets and socket)
 # Activity in the browser, at most once a minute, so working in a page without loading another keeps the sign-in; and
-# `page-offline` on the body while NiceGUI's socket is down, for the Reconnecting chip (spec §6.2).
+# `page-offline` on the body while NiceGUI's socket is down, for the Reconnecting chip (spec §6.2); and `inert` on
+# `.offline-inert`, an editor that keeps its draft on the server and so can't be worked offline (§9).
 _ACTIVITY_SCRIPT: Final = """<script>
 (() => {
   let last = 0;
@@ -64,8 +65,12 @@ _ACTIVITY_SCRIPT: Final = """<script>
   addEventListener("keydown", ping, true);
   const watch = () => {
     if (!window.socket) return setTimeout(watch, 200);
-    window.socket.on("disconnect", () => document.body.classList.add("page-offline"));
-    window.socket.on("connect", () => document.body.classList.remove("page-offline"));
+    const offline = (down) => {
+      document.body.classList.toggle("page-offline", down);
+      document.querySelectorAll(".offline-inert").forEach((e) => (e.inert = down));
+    };
+    window.socket.on("disconnect", () => offline(true));
+    window.socket.on("connect", () => offline(false));
   };
   watch();
 })();

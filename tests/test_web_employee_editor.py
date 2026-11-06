@@ -11,10 +11,11 @@ from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
 
 # First party imports
-from timeclock_backend.web import text
+from timeclock_backend.web import employee_editor, text
 
 if TYPE_CHECKING:
   # Third party imports
+  import pytest
   from page_sim import DbPage
 
 
@@ -158,3 +159,74 @@ async def test_an_unknown_employee_says_so(db_page: DbPage) -> None:
   await db_page.user.should_see(text.EMPLOYEE_GONE)
   await db_page.user.should_see(marker="crumb")
   await db_page.user.should_not_see(kind=ui.input)
+
+
+async def test_an_outside_change_updates_an_untouched_field(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  await db_page.user.open(f"/employee?id={bob}")
+  await db_page.user.should_see("None yet.")
+  with db_page.db.admin() as conn:
+    conn.execute("UPDATE employees SET email = 'bob@example.com' WHERE id = %s", (bob,))
+  await db_page.user.should_see(marker="history-line", content="Email: empty to bob@example.com", retries=50)
+  assert _widget(db_page, "field-email").value == "bob@example.com"
+  await db_page.user.should_see("None yet.")
+  await db_page.user.should_not_see(marker="outside")
+
+
+async def test_an_outside_change_to_a_drafted_field_asks_whose_to_keep(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  await db_page.user.open(f"/employee?id={bob}")
+  db_page.user.find(marker="field-phone").type("5555550142")
+  db_page.user.find(marker="field-email").type("mine@example.com")
+  await db_page.user.should_see("Email: empty to mine@example.com")
+  with db_page.db.admin() as conn:
+    conn.execute("UPDATE employees SET phone = '+15555550199', email = 'theirs@example.com' WHERE id = %s", (bob,))
+  await db_page.user.should_see(marker="theirs-phone", retries=50)
+  await db_page.user.should_see("Pick theirs or yours for each field marked in red to save.")
+  assert not _widget(db_page, "save").enabled
+  db_page.user.find(marker="keep-theirs-email").click()
+  db_page.user.find(marker="keep-mine-phone").click()
+  await db_page.user.should_see("Phone: (555) 555-0199 to (555) 555-0142")
+  await db_page.user.should_not_see(marker="theirs-phone")
+  await db_page.user.should_not_see("Email: theirs@example.com to mine@example.com")
+  assert _widget(db_page, "field-email").value == "theirs@example.com"
+  db_page.user.find(marker="save").click()
+  await db_page.user.should_see("Saved.")
+  assert _row(db_page, bob, "phone", "email") == ("+15555550142", "theirs@example.com")
+
+
+async def test_an_outside_change_elsewhere_asks_to_confirm_the_save(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  await db_page.user.open(f"/employee?id={bob}")
+  db_page.user.find(marker="field-phone").type("5555550142")
+  await db_page.user.should_see("Phone: empty to (555) 555-0142")
+  with db_page.db.admin() as conn:
+    conn.execute("UPDATE employees SET email = 'theirs@example.com' WHERE id = %s", (bob,))
+  user = str(conninfo_to_dict(db_page.db.dsn)["user"])
+  await db_page.user.should_see(f"{user} changed Email while you were editing.", retries=50)
+  db_page.user.find(marker="save").click()
+  await db_page.user.should_see("Save your changes on top of theirs?")
+  assert _row(db_page, bob, "phone") == (None,)
+  db_page.user.find(marker="confirm-save").click()
+  await db_page.user.should_see("Saved.")
+  assert _row(db_page, bob, "phone", "email") == ("+15555550142", "theirs@example.com")
+
+
+async def test_a_save_that_lost_a_race_marks_the_field(db_page: DbPage, monkeypatch: pytest.MonkeyPatch) -> None:
+  # Another save lands between this page's last read and its own: the wake hasn't come yet when Save is pressed.
+  bob = db_page.db.employees[1]
+  real = employee_editor.save_employee
+
+  async def raced(conn: Any, **kwargs: Any) -> Any:
+    with db_page.db.admin() as admin:
+      admin.execute("UPDATE employees SET phone = '+15555550199' WHERE id = %s", (bob,))
+    return await real(conn, **kwargs)
+
+  monkeypatch.setattr(employee_editor, "save_employee", raced)
+  await db_page.user.open(f"/employee?id={bob}")
+  db_page.user.find(marker="field-phone").type("5555550142")
+  await db_page.user.should_see("Phone: empty to (555) 555-0142")
+  db_page.user.find(marker="save").click()
+  await db_page.user.should_see(text.EMPLOYEE_CHANGED)
+  await db_page.user.should_see(marker="theirs-phone")
+  assert _row(db_page, bob, "phone") == ("+15555550199",)

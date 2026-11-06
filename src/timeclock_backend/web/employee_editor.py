@@ -6,6 +6,7 @@ back. A save writes only the changed columns; the database logs each (0016) and 
 """
 
 # Standard library imports
+import asyncio
 import logging
 import re
 from functools import partial
@@ -14,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 # Third party imports
 import bcrypt
 import psycopg
-from nicegui import app, ui
+from nicegui import app, context, ui
 from timeclock_schema.models import EMAIL_PATTERN
 
 # Local folder imports
@@ -46,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 _PHONE_PUNCTUATION = re.compile(r"[\s().-]")
 _TEXT_FIELDS = frozenset({"first_name", "middle_name", "last_name", "phone", "email"})
+type _Read = tuple[Context, dict[str, FieldValue] | None, list[Fingerprint], list[EmployeeHistoryItem]]
 
 
 def normalize_phone(raw: str) -> str:
@@ -109,9 +111,7 @@ def _moment(at: datetime, tz: ZoneInfo) -> str:
   return at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
 
 
-async def _read(
-  conn: AsyncConnection[DictRow], employee_id: int, *, default_tz: ZoneInfo
-) -> tuple[Context, dict[str, FieldValue] | None, list[Fingerprint], list[EmployeeHistoryItem]]:
+async def _read(conn: AsyncConnection[DictRow], employee_id: int, *, default_tz: ZoneInfo) -> _Read:
   """Everything the editor shows of the employee, in one transaction."""
   ctx = await load_context(conn, default_tz=default_tz)
   return (
@@ -132,11 +132,12 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
   query: Mapping[str, str],
 ) -> None:
   """Draw `/employee?id=<id>`: the employee's fields, prints and history, a draft of changes, and its save."""
-  storage, session = app.storage.user, app.storage.browser
+  # Captured now: a live update runs outside any request, where app.storage can't tell whose browser it is.
+  storage, session, client = app.storage.user, app.storage.browser, context.client
   chosen = prefs()
   h24, technical = chosen["h24"], chosen["technical"]
   employee = int(v) if (v := query.get("id", "")).isdigit() else None
-  body = ui.column().classes("page-body employee-editor")
+  body = ui.column().classes("page-body employee-editor offline-inert")  # inert while the socket is down (app.py)
   with body, ui.link(target="/employees").classes("crumb").mark("crumb"):
     ui.element("span").classes("page-icon icon-arrow-back")
     ui.label("Employees")
@@ -171,17 +172,58 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
   draft: dict[str, FieldValue] = {}  # the fields changed, as they'd be stored
   errors: dict[str, str] = {}  # the fields that can't be stored as typed
   message: tuple[str, str] | None = None  # (callout color, text) after a save
+  clashing: set[str] = set()  # drafted fields someone else changed meanwhile, until a side is picked (spec §6.1)
+  outside: list[str] = []  # other fields someone else changed while there's a draft, which Save then confirms
   saving = False
+  busy = asyncio.Lock()  # a save and a live update take turns, so neither lands over the other's newer read
   widgets: dict[str, Any] = {}
   groups = dict(sorted(ctx.groups.items(), key=lambda g: g[1].casefold()))
   roles = {r.value: label for r, label in text.ROLE_LABEL.items()}
 
-  def redraw() -> None:
-    for field, widget in widgets.items():
+  def last_change(field: str) -> EmployeeHistoryItem | None:
+    return next((item for item in history if any(c.field == field for c in item.changes)), None)
+
+  def take(fresh: _Read) -> bool:
+    """Show the employee as just read, keeping the draft (spec §6.1); False when they're gone."""
+    nonlocal ctx, prints, history, base
+    ctx, row, prints, history = fresh
+    if row is None:
+      return False
+    sorted_groups = dict(sorted(ctx.groups.items(), key=lambda g: g[1].casefold()))
+    if widgets["group_id"].options != sorted_groups:  # before any value below moves to a new group
+      widgets["group_id"].set_options(sorted_groups)
+    moved = [f for f in EDITABLE if row[f] != base[f]]
+    base = row
+    for field in moved:
       if field in draft:
-        widget.classes(add="changed")
-      else:
-        widget.classes(remove="changed")
+        if draft[field] == row[field]:
+          draft.pop(field)
+        else:
+          clashing.add(field)
+      elif field not in errors:  # one being typed keeps what's typed
+        if draft and field not in outside:
+          outside.append(field)
+        widgets[field].set_value(_shown(field, row[field]))  # equal to the base now, so it drafts nothing
+    title.refresh()
+    fingerprints.refresh()
+    past.refresh()
+    return True
+
+  def keep(field: str, *, mine: bool) -> None:
+    clashing.discard(field)
+    if mine:
+      redraw()
+    else:
+      undo(field)
+
+  def redraw() -> None:
+    clashing.intersection_update(draft)  # undoing a field settles its pick
+    if not draft:
+      outside.clear()
+    for field, widget in widgets.items():
+      widget.classes(remove="changed clash")
+      if field in draft:
+        widget.classes(add="clash" if field in clashing else "changed")
     notes.refresh()
     changes.refresh()
     actions.refresh()
@@ -233,7 +275,17 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
 
   @ui.refreshable
   def notes(field: str) -> None:
-    if field in draft:
+    if field in clashing:
+      found = last_change(field)
+      by = "" if found is None else f", saved {text.clock_time(found.when, ctx.tz, h24=h24)} by {found.who}"
+      theirs, yours = (text.field_value(field, v, ctx.groups) for v in (base[field], draft[field]))
+      with ui.column().classes("callout red clash-pick").mark(f"theirs-{field}"):
+        ui.label(f"Theirs: {theirs}{by} · Yours: {yours}")
+        with ui.row():
+          keep_theirs = ui.button("Keep theirs", on_click=partial(keep, field, mine=False)).props("outline dense no-caps")
+          keep_theirs.mark(f"keep-theirs-{field}")
+          ui.button("Keep mine", on_click=partial(keep, field, mine=True)).props("outline dense no-caps").mark(f"keep-mine-{field}")
+    elif field in draft:
       with ui.row().classes("was"):
         ui.label(f"Was {text.field_value(field, base[field], ctx.groups)}")
         ui.button("Undo", on_click=lambda: undo(field)).props("flat dense no-caps").classes("btn text")
@@ -302,9 +354,16 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
 
   @ui.refreshable
   def changes() -> None:
+    if outside:
+      whos = list(dict.fromkeys(found.who for f in outside if (found := last_change(f)) is not None)) or ["Someone"]
+      labels = [text.FIELD_LABEL[f] for f in EDITABLE if f in outside]
+      named = labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
+      with ui.row().classes("callout blue").mark("outside"):
+        ui.element("span").classes("page-icon icon-info")
+        ui.label(f"{' and '.join(whos)} changed {named} while you were editing.")
     if message is not None:
       with ui.row().classes(f"callout {message[0]}"):
-        ui.element("span").classes("page-icon " + ("icon-check" if message[0] == "green" else "icon-error"))
+        ui.element("span").classes("page-icon " + {"green": "icon-check", "orange": "icon-warning"}.get(message[0], "icon-error"))
         ui.label(message[1])
     if not draft:
       ui.label("None yet.").classes("small muted")
@@ -322,7 +381,12 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
 
   @ui.refreshable
   def actions() -> None:
-    blocker = "Fix the fields marked in red to save." if errors else None if draft else "Nothing to save yet."
+    if clashing:
+      blocker = "Pick theirs or yours for each field marked in red to save."
+    elif errors:
+      blocker = "Fix the fields marked in red to save."
+    else:
+      blocker = None if draft else "Nothing to save yet."
     with ui.row().classes("saverow"):
       ui.button("Discard", on_click=discard).props("outline no-caps").classes("btn outline").mark("discard")
       button = ui.button("Saving..." if saving else "Save changes", on_click=save)
@@ -331,47 +395,74 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
         button.disable()
     if blocker is not None:
       ui.label(blocker).classes("blocker small")
+    ui.label(text.EMPLOYEE_OFFLINE).classes("offline-note small")
 
-  async def save() -> None:
-    nonlocal base, prints, history, ctx, message, saving
-    if not draft or errors or saving:
+  async def save(*, sure: bool = False) -> None:  # noqa: C901 - one save and each of its answers
+    nonlocal message, saving
+    if not draft or errors or clashing or saving:
       return
+    if outside and not sure:
+      confirm.open()
+      return
+    confirm.close()
     saving = True
     actions.refresh()
-    wanted = {f: draft[f] for f in EDITABLE if f in draft}
-    fresh = None
-    try:
-      async with editor_transaction(pools, gate, storage, session, test_database=signin.test_database) as conn:
-        moved = await save_employee(conn, employee_id=employee, base=base, changes=wanted, note=(note.value or "").strip())
-        if moved is None:
-          fresh = await _read(conn, employee, default_tz=settings.tz)
-    except SignedOutError:
-      ui.navigate.to("/signin")
-      return
-    except DatabaseChangedError:
-      ui.navigate.reload()
-      return
-    except LookupError:
-      message = ("red", text.EMPLOYEE_GONE)
-    except psycopg.OperationalError:
-      logger.warning("an employee save couldn't reach the database", exc_info=True)
-      message = ("red", text.DB_DOWN)
-    except psycopg.Error:  # one the database refused: a page bug, since the page checks what it can first
-      logger.exception("an employee save failed")
-      message = ("red", text.EMPLOYEE_SAVE_FAILED)
-    finally:
-      saving = False
-    if fresh is not None:
-      ctx, row, prints, history = fresh
-      assert row is not None  # the save just updated it
-      base = row
-      draft.clear()
-      note.set_value("")
-      message = ("green", "Saved.")
-      title.refresh()
-      fingerprints.refresh()
-      past.refresh()
-    redraw()
+    known = len(outside)
+    async with busy:
+      if clashing or len(outside) != known:  # a live update landed while this waited; it's shown, for Save again
+        saving = False
+        redraw()
+        return
+      wanted = {f: draft[f] for f in EDITABLE if f in draft}
+      fresh = moved = None
+      try:
+        async with editor_transaction(pools, gate, storage, session, test_database=signin.test_database) as conn:
+          moved = await save_employee(conn, employee_id=employee, base=base, changes=wanted, note=(note.value or "").strip())
+          fresh = await _read(conn, employee, default_tz=settings.tz)  # what it saved, or what it lost to
+      except SignedOutError:
+        ui.navigate.to("/signin")
+        return
+      except DatabaseChangedError:
+        ui.navigate.reload()
+        return
+      except LookupError:
+        message = ("red", text.EMPLOYEE_GONE)
+      except psycopg.OperationalError:
+        logger.warning("an employee save couldn't reach the database", exc_info=True)
+        message = ("red", text.DB_DOWN)
+      except psycopg.Error:  # one the database refused: a page bug, since the page checks what it can first
+        logger.exception("an employee save failed")
+        message = ("red", text.EMPLOYEE_SAVE_FAILED)
+      finally:
+        saving = False
+      if fresh is not None and moved is None:
+        draft.clear()
+        note.set_value("")
+        take(fresh)
+        message = ("green", "Saved.")
+      elif fresh is not None:  # a changed field moved underneath it: marked to pick, as a live update marks it
+        message = ("orange", text.EMPLOYEE_CHANGED) if take(fresh) else ("red", text.EMPLOYEE_GONE)
+      redraw()
+
+  async def woken() -> None:
+    nonlocal message
+    with client:
+      async with busy:
+        try:
+          async with editor_transaction(pools, gate, storage, session, test_database=signin.test_database, touch=False) as conn:
+            fresh = await _read(conn, employee, default_tz=settings.tz)  # someone else's change isn't this user's activity
+        except SignedOutError:
+          ui.navigate.to("/signin")
+          return
+        except DatabaseChangedError:
+          ui.navigate.reload()
+          return
+        except psycopg.OperationalError:
+          logger.warning("the employee editor's live update can't read the database", exc_info=True)  # the next wake tries again
+          return
+        if not take(fresh):
+          message = ("red", text.EMPLOYEE_GONE)
+        redraw()
 
   with body:
     title()
@@ -427,3 +518,12 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
         changes()
         note = ui.textarea(placeholder="Note (optional)").props("outlined autogrow").classes("w-full note").mark("note")
         actions()
+  with ui.dialog() as confirm, ui.card().classes("dlg offline-inert"):
+    ui.label("Save your changes on top of theirs?").classes("dlg-title")
+    ui.label("Someone else changed this employee while you were editing. Saving keeps their changes and adds yours.")
+    with ui.row().classes("saverow"):
+      ui.button("Cancel", on_click=confirm.close).props("flat no-caps")
+      confirm_save = ui.button("Save", on_click=partial(save, sure=True)).mark("confirm-save")
+      confirm_save.props("unelevated no-caps color=primary text-color=black")
+
+  client.on_delete(live.subscribe(test=signin.test_database, callback=woken))
