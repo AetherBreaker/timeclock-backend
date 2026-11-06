@@ -208,3 +208,21 @@ async def test_a_change_in_the_database_refreshes_the_open_list(db_page: DbPage)
 async def test_the_list_says_when_the_database_is_down(page: PageUnderTest) -> None:
   await sign_in(page)
   await page.user.should_see(text.DB_DOWN)
+
+
+async def test_filters_in_the_address_open_filtered(db_page: DbPage) -> None:
+  # Back to a filtered list, a reload or a bookmark; one that's gone since shows everyone.
+  warehouse = db_page.db.group("Warehouse")
+  bob = db_page.db.employees[1]
+  dee = db_page.db.employee("Dee", "Moss", "78", group_id=warehouse)
+  for employee in (bob, dee):
+    _shift(db_page, employee, 3, "08:00", "16:00")
+  await db_page.user.open(f"/?group={warehouse}")
+  await db_page.user.should_see(marker=f"employee-{dee}")
+  assert _cards(db_page) == [f"employee-{dee}"]
+  await db_page.user.open(f"/?employee={bob}")
+  await db_page.user.should_see(marker=f"employee-{bob}")
+  assert _cards(db_page) == [f"employee-{bob}"]
+  await db_page.user.open("/?group=999999&employee=999999")
+  await db_page.user.should_see(marker=f"employee-{dee}")
+  assert _cards(db_page) == [f"employee-{bob}", f"employee-{dee}"]

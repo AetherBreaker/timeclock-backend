@@ -236,6 +236,18 @@ body.test-database {
   font-size: 15px;
 }
 
+.icon-fingerprint::before {
+  content: "fingerprint";
+}
+
+.icon-password::before {
+  content: "password";
+}
+
+.icon-casino::before {
+  content: "casino";
+}
+
 .icon-warning::before {
   content: "warning";
   font-size: 20px;
@@ -642,6 +654,142 @@ table.sh .chips {
 
 .empty {
   padding: 8px 2px;
+}
+
+/* The Employees list (mockup J) */
+.employee-list {
+  width: 100%;
+  gap: 14px;
+}
+
+.filter.search {
+  min-width: 260px;
+}
+
+table.sh tr.off td {
+  color: var(--muted);
+}
+
+table.sh td.det-row {
+  padding-top: 0;
+}
+
+table.sh td .chip {
+  margin-left: 6px;
+}
+
+/* The employee editor (mockups K to M) */
+.employee-editor {
+  width: 100%;
+  gap: 12px;
+}
+
+.employee-editor .card .h4 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.employee-editor .fields {
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.employee-editor .ef {
+  flex: 1 1 180px;
+  gap: 2px;
+}
+
+.employee-editor .ef.wide {
+  flex-basis: 260px;
+}
+
+.employee-editor .ef .q-select {
+  min-width: 200px;
+}
+
+.employee-editor .lockrow {
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.employee-editor .changed .q-field__control::before {
+  border-color: var(--sft-blue);
+  border-width: 2px;
+}
+
+.employee-editor .q-toggle.changed .q-toggle__label {
+  color: var(--sft-blue);
+}
+
+.employee-editor .print {
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.employee-editor .hist-note {
+  font-style: italic;
+}
+
+.employee-editor .clash .q-field__control::before {
+  border-color: var(--sft-red);
+  border-width: 2px;
+}
+
+.employee-editor .q-toggle.clash .q-toggle__label {
+  color: var(--chip-red);
+}
+
+.employee-editor .clash-pick {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.pin-dlg {
+  gap: 10px;
+}
+
+.pin-dlg .pins {
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.pin-dlg .gen {
+  gap: 2px;
+  padding: 10px 12px;
+  background: var(--callout-blue-bg);
+  border-radius: 6px;
+  line-height: 1.5;
+}
+
+.pin-dlg .gen .made {
+  font-weight: 700;
+}
+
+.pin-dlg .pin-error {
+  color: var(--chip-red);
+}
+
+.employee-editor .offline-note {
+  display: none;
+  color: var(--chip-orange);
+}
+
+body.page-offline .employee-editor .offline-note {
+  display: block;
+}
+
+body.page-offline .offline-inert {
+  opacity: 0.6;
 }
 
 /* NiceGUI's own connection popup gives way to the top bar's chip (spec §6.2). */
@@ -1104,7 +1252,8 @@ textarea.note {
   box-shadow: 0 6px 24px var(--shadow);
 }
 
-.dlg h3 {
+.dlg h3,
+.dlg .dlg-title {
   margin: 0 0 8px;
   font-size: 16px;
   font-weight: 700;

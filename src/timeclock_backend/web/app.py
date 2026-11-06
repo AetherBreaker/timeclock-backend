@@ -27,6 +27,8 @@ from starlette.responses import PlainTextResponse, RedirectResponse, Response
 # Local folder imports
 from . import text
 from .db import PoolAccounts, Pools
+from .employee_editor import draw_employee_editor
+from .employee_list import draw_employee_list
 from .gate import EndReason, Gate, SignedOutError
 from .live import Live
 from .settings import PageSettings
@@ -53,7 +55,8 @@ _TEST_FORM_BYTES: Final = 4096
 _PUBLIC_PATHS: Final = frozenset({"/signin", "/signin/zoho", "/auth/zoho", "/signin/test", "/favicon.ico"})
 _PUBLIC_PREFIXES: Final = ("/static/", "/_nicegui")  # the page's files and NiceGUI's (its assets and socket)
 # Activity in the browser, at most once a minute, so working in a page without loading another keeps the sign-in; and
-# `page-offline` on the body while NiceGUI's socket is down, for the Reconnecting chip (spec §6.2).
+# `page-offline` on the body while NiceGUI's socket is down, for the Reconnecting chip (spec §6.2); and `inert` on
+# `.offline-inert`, an editor that keeps its draft on the server and so can't be worked offline (§9).
 _ACTIVITY_SCRIPT: Final = """<script>
 (() => {
   let last = 0;
@@ -62,8 +65,12 @@ _ACTIVITY_SCRIPT: Final = """<script>
   addEventListener("keydown", ping, true);
   const watch = () => {
     if (!window.socket) return setTimeout(watch, 200);
-    window.socket.on("disconnect", () => document.body.classList.add("page-offline"));
-    window.socket.on("connect", () => document.body.classList.remove("page-offline"));
+    const offline = (down) => {
+      document.body.classList.toggle("page-offline", down);
+      document.querySelectorAll(".offline-inert").forEach((e) => (e.inert = down));
+    };
+    window.socket.on("disconnect", () => offline(true));
+    window.socket.on("connect", () => offline(false));
   };
   watch();
 })();
@@ -269,6 +276,19 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
     signin: SignIn = request.state.signin
     frame(signin, settings, gate)
     await draw_shift_editor(signin, settings=settings, pools=pools, gate=gate, live=live, now=now, query=request.query_params)
+
+  @ui.page("/employees", title=settings.page_name)
+  async def employees_page(request: Request) -> None:
+    signin: SignIn = request.state.signin
+    frame(signin, settings, gate, section="employees")
+    await draw_employee_list(signin, settings=settings, pools=pools, gate=gate, live=live, query=request.query_params)
+
+  # Its draft lives in the page's client, so it outlives a dropped connection as the shift editor does (spec §9).
+  @ui.page("/employee", title=settings.page_name, reconnect_timeout=outlives)
+  async def employee_page(request: Request) -> None:
+    signin: SignIn = request.state.signin
+    frame(signin, settings, gate, section="employees")
+    await draw_employee_editor(signin, settings=settings, pools=pools, gate=gate, live=live, query=request.query_params)
 
   @ui.page("/shift/new", title=settings.page_name, reconnect_timeout=outlives)
   async def add_shift_page(request: Request) -> None:

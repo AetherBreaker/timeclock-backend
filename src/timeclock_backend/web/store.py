@@ -1,17 +1,19 @@
 """What the page reads and writes, each call inside one `editor_transaction`, so as the signed-in account's badge.
 
-Badges read punches, corrections, saves, employees (no PIN hashes), groups and settings, and insert punches,
-corrections and saves (timeclock-schema 0015); the database refuses an account's own punches itself.
+Badges read punches, corrections, saves, employees (no PIN hashes), fingerprints (no templates), groups, settings and
+the employee change log; they insert punches, corrections and saves, and update the Employees menu's fields
+(timeclock-schema 0015, 0016). The database refuses an account's own punches and locked fields itself.
 """
 
 # Standard library imports
 import hashlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
 # Third party imports
-from timeclock_schema.enums import EmployeeRole, PunchKind
+from psycopg import sql
+from timeclock_schema.enums import EmployeeRole, Finger, PunchKind
 from timeclock_schema.models import Settings
 
 # Local folder imports
@@ -29,6 +31,12 @@ if TYPE_CHECKING:
 
   # Local folder imports
   from .rules import Record
+
+# The fields the Employees menu edits, in the editor's order (spec §9); the username isn't one.
+EDITABLE: Final = ("first_name", "middle_name", "last_name", "phone", "email", "group_id", "role", "fingerprint_exempt", "active")
+# What an editor can't change on their own record (spec §9); 0016's trigger refuses them too.
+LOCKED_FOR_SELF: Final = frozenset({"group_id", "role", "fingerprint_exempt", "active"})
+type FieldValue = str | int | bool | None
 
 # The advisory lock's first key, so the page's per-employee locks can't meet another lock's numbers.
 _LOCK_SPACE = 7410
@@ -51,6 +59,8 @@ class Person:
   fingerprint_exempt: bool
   updated_at: datetime
   fingerprints: int
+  added_by: str | None
+  """The login that added them (`employees.db_login`); None for rows from before it was kept."""
 
   @property
   def name(self) -> str:
@@ -84,7 +94,7 @@ async def load_context(conn: AsyncConnection[DictRow], *, default_tz: ZoneInfo) 
   people = await (
     await conn.execute(
       "SELECT e.id, e.first_name, e.middle_name, e.last_name, e.pin_username AS username, e.role, e.active, e.group_id,"
-      " e.phone, e.email, e.fingerprint_exempt, e.updated_at,"
+      " e.phone, e.email, e.fingerprint_exempt, e.updated_at, e.db_login AS added_by,"
       " (SELECT count(*) FROM fingerprints f WHERE f.employee_id = e.id) AS fingerprints"
       " FROM employees e"
     )
@@ -286,3 +296,119 @@ async def save_edit(conn: AsyncConnection[DictRow], *, employee_id: int, records
           (r.punch_id, r.action, r.at, r.kind, note, edit),
         )
   return edit
+
+
+@dataclass(frozen=True, slots=True)
+class Fingerprint:
+  """A registered print as the editor lists it; the template stays out of reach (0015)."""
+
+  id: UUID
+  finger: Finger
+  registered_at: datetime
+  instance_id: str
+  db_login: str
+
+
+async def load_fingerprints(conn: AsyncConnection[DictRow], employee_id: int) -> list[Fingerprint]:
+  """The employee's prints, oldest first."""
+  rows = await (
+    await conn.execute(
+      "SELECT id, finger, registered_at, instance_id, db_login FROM fingerprints WHERE employee_id = %s ORDER BY registered_at, id",
+      (employee_id,),
+    )
+  ).fetchall()
+  return [Fingerprint(**{**r, "finger": Finger(r["finger"])}) for r in rows]
+
+
+@dataclass(frozen=True, slots=True)
+class EmployeeChange:
+  """One changed column from `employee_changes`, its values as text (`to_jsonb ->>`); a PIN change, field `pin`, has none."""
+
+  id: UUID
+  field: str
+  old_value: str | None
+  new_value: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class EmployeeHistoryItem:
+  """A page save (`edit_id`) with its note, or one statement's changes made elsewhere, with who made them."""
+
+  when: datetime
+  who: str
+  note: str
+  changes: tuple[EmployeeChange, ...]
+  edit_id: UUID | None
+
+
+async def load_employee_history(conn: AsyncConnection[DictRow], employee_id: int) -> list[EmployeeHistoryItem]:
+  """The employee's change log, newest first, one item per save; changes without a save group by login and moment.
+
+  Within an item, the editor's field order, then any other column, then the PIN.
+  """
+  rows = await (
+    await conn.execute(
+      "SELECT c.id, c.field, c.old_value, c.new_value, c.edit_id, c.db_login, c.recorded_at, e.note"
+      " FROM employee_changes c LEFT JOIN edits e ON e.id = c.edit_id WHERE c.employee_id = %s ORDER BY c.recorded_at, c.id",
+      (employee_id,),
+    )
+  ).fetchall()
+  grouped: dict[object, list[DictRow]] = {}
+  for r in rows:  # one statement's rows share its transaction's now()
+    grouped.setdefault(r["edit_id"] or (r["db_login"], r["recorded_at"]), []).append(r)
+  place = {field: i for i, field in enumerate(EDITABLE)}
+  items = []
+  for found in grouped.values():
+    found.sort(key=lambda r: (r["field"] == "pin", place.get(r["field"], len(place)), r["field"]))
+    first = found[0]
+    changes = tuple(EmployeeChange(r["id"], r["field"], r["old_value"], r["new_value"]) for r in found)
+    items.append(EmployeeHistoryItem(first["recorded_at"], first["db_login"], first["note"] or "", changes, first["edit_id"]))
+  return sorted(items, key=lambda item: item.when, reverse=True)
+
+
+async def employee_row(conn: AsyncConnection[DictRow], employee_id: int, *, lock: bool = False) -> dict[str, FieldValue] | None:
+  """The employee's `EDITABLE` columns, None when they're gone; `lock` holds the row to the end of the transaction."""
+  query = sql.SQL("SELECT {} FROM employees WHERE id = %s{}").format(
+    sql.SQL(", ").join(map(sql.Identifier, EDITABLE)), sql.SQL(" FOR UPDATE" if lock else "")
+  )
+  return await (await conn.execute(query, (employee_id,))).fetchone()
+
+
+async def save_employee(
+  conn: AsyncConnection[DictRow],
+  *,
+  employee_id: int,
+  base: Mapping[str, FieldValue],
+  changes: Mapping[str, FieldValue],
+  note: str,
+) -> dict[str, FieldValue] | None:
+  """Write one save of the Employees menu: its `edits` row, then only the changed columns; the trigger logs each (0016).
+
+  Returns None once saved. When a changed field no longer holds `base`'s value, writes nothing and returns the row as
+  it stands, so the editor can mark it; other fields may have moved, and keep their new values.
+
+  Raises:
+    LookupError: The employee is gone.
+  """
+  current = await employee_row(conn, employee_id, lock=True)
+  if current is None:
+    raise LookupError(employee_id)
+  if any(current[field] != base[field] for field in changes):
+    return current
+  row = await (await conn.execute("INSERT INTO edits (note) VALUES (%s) RETURNING id", (note,))).fetchone()
+  assert row is not None  # RETURNING always returns the row
+  await conn.execute("SELECT set_config('timeclock.edit_id', %s, true)", (str(row["id"]),))
+  assignments = sql.SQL(", ").join(sql.SQL("{} = %s").format(sql.Identifier(field)) for field in changes)
+  await conn.execute(sql.SQL("UPDATE employees SET {} WHERE id = %s").format(assignments), [*changes.values(), employee_id])
+  return None
+
+
+async def set_pin(conn: AsyncConnection[DictRow], *, employee_id: int, pin_hash: str) -> None:
+  """Store a new PIN hash on its own, outside any save (spec §9): the log says "pin" with no values and no `edit_id`.
+
+  Raises:
+    LookupError: The employee is gone.
+  """
+  cursor = await conn.execute("UPDATE employees SET pin_hash = %s WHERE id = %s", (pin_hash, employee_id))
+  if cursor.rowcount == 0:
+    raise LookupError(employee_id)
