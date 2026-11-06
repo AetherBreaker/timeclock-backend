@@ -13,10 +13,11 @@ if TYPE_CHECKING:
 REFUSED = "This account can't use this page. If it should have access, ask to have it added."
 SIGNED_OUT = "You're signed out."
 FAILED = "Sign-in with Zoho didn't work. Try again."
+WRONG_PASSWORD = "That email and password don't match a test account."
 DB_DOWN = "The database can't be reached right now. Try again in a minute."
 
 
-def ended(reason: EndReason, settings: PageSettings) -> str | None:
+def ended(reason: EndReason, settings: PageSettings) -> str | None:  # noqa: PLR0911 - one return per reason
   """Why the last sign-in ended, for the sign-in page; None when there's nothing to say."""
   match reason:
     case EndReason.NONE:
@@ -31,5 +32,7 @@ def ended(reason: EndReason, settings: PageSettings) -> str | None:
       return REFUSED
     case EndReason.FAILED:
       return FAILED
+    case EndReason.WRONG_PASSWORD:
+      return WRONG_PASSWORD
     case EndReason.SIGNED_OUT:
       return SIGNED_OUT

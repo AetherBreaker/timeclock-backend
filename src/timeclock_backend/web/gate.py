@@ -58,6 +58,7 @@ class EndReason(StrEnum):
   EXPIRED = "expired"
   REFUSED = "refused"
   FAILED = "failed"
+  WRONG_PASSWORD = "wrong_password"  # the test sign-in's, for a wrong email or password alike
   SIGNED_OUT = "signed_out"
 
 

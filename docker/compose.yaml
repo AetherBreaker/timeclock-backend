@@ -82,6 +82,7 @@ services:
       - TIMECLOCK_WEB_PASSWORD=${TIMECLOCK_WEB_PASSWORD:-}
       - ZOHO_CLIENT_ID=${ZOHO_CLIENT_ID:-}
       - ZOHO_CLIENT_SECRET=${ZOHO_CLIENT_SECRET:-}
+      - PAGE_TEST_ACCOUNTS=${PAGE_TEST_ACCOUNTS:-}  # the test sign-in (README); empty turns it off
     networks:
       coolify: {}
       timeclock-web-db:

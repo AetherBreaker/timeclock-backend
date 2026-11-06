@@ -3,6 +3,7 @@
 # Standard library imports
 import asyncio
 import contextlib
+import hmac
 import logging
 import traceback
 from datetime import UTC, datetime
@@ -42,7 +43,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 STATIC_DIR: Final = Path(__file__).with_name("static")
-_PUBLIC_PATHS: Final = frozenset({"/signin", "/signin/zoho", "/auth/zoho", "/favicon.ico"})  # the icon: the sign-in page's tab too
+# The sign-in page and its methods' routes, and the icon, which the sign-in page's tab shows too.
+_PUBLIC_PATHS: Final = frozenset({"/signin", "/signin/zoho", "/auth/zoho", "/signin/test", "/favicon.ico"})
 _PUBLIC_PREFIXES: Final = ("/static/", "/_nicegui")  # the page's files and NiceGUI's (its assets and socket)
 # Activity in the browser, at most once a minute, so working in a page without loading another keeps the sign-in.
 _ACTIVITY_SCRIPT: Final = """<script>
@@ -62,7 +64,10 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
   zoho_client_kwargs: Mapping[str, Any] | None = None,
   now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
-  """Register the page on NiceGUI's app: its files, the gate, the Zoho sign-in routes, and the pages.
+  """Register the page on NiceGUI's app: its files, the gate, the sign-in routes, and the pages.
+
+  Each sign-in method only proves an email: the allowlist and the gate do the rest, so a method is a route that ends in
+  `gate.start` and a way in on the sign-in page. Zoho is on when its client is set, the test sign-in when it has accounts.
 
   Args:
     settings: The page's settings.
@@ -71,12 +76,17 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
     now: The clock the gate uses.
   """
   gate = Gate(settings, accounts, app.storage.general, now=now)
-  zoho = OAuth().register(
-    "zoho",
-    client_id=settings.zoho_client_id,
-    client_secret=settings.zoho_client_secret.get_secret_value(),
-    server_metadata_url=f"{settings.zoho_accounts_url}/.well-known/openid-configuration",
-    client_kwargs={"scope": "openid email", "code_challenge_method": "S256", **(zoho_client_kwargs or {})},
+  logins = settings.test_logins()
+  zoho = (
+    OAuth().register(
+      "zoho",
+      client_id=settings.zoho_client_id,
+      client_secret=settings.zoho_client_secret.get_secret_value(),
+      server_metadata_url=f"{settings.zoho_accounts_url}/.well-known/openid-configuration",
+      client_kwargs={"scope": "openid email", "code_challenge_method": "S256", **(zoho_client_kwargs or {})},
+    )
+    if settings.zoho_client_id
+    else None
   )
   redirect_uri = f"{settings.public_url}/auth/zoho"
   # Zoho takes no prompt=select_account, so another account means signing out of Zoho first.
@@ -107,49 +117,75 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
 
   app.add_middleware(SignInGate)
 
-  @app.get("/signin/zoho")
-  async def start_zoho_sign_in(request: Request) -> Response:
-    return await zoho.authorize_redirect(request, redirect_uri)
+  if zoho is not None:
 
-  @app.get("/auth/zoho")
-  async def finish_zoho_sign_in(request: Request) -> Response:
-    storage = app.storage.user
-    try:
-      # Authlib checks the audience only when asked to, and skips every id_token check when the reply has no id_token.
-      token = await zoho.authorize_access_token(
-        request,
-        claims_options={
-          "iss": {"essential": True, "value": settings.zoho_accounts_url},
-          "aud": {"essential": True, "value": settings.zoho_client_id},
-        },
-      )
-    except Exception:  # any fault in Zoho's reply, or in reaching Zoho, is a failed sign-in, never a signed-in one
-      logger.warning("a Zoho sign-in failed", exc_info=True)
-      token = {}
-    userinfo = token.get("userinfo")
-    email = None if userinfo is None else userinfo.get("email")
-    if userinfo is None:
-      ended = EndReason.FAILED
-    elif userinfo.get("email_verified") is not True or not isinstance(email, str):
-      ended = EndReason.REFUSED
-    else:
-      email = email.lower()  # badges are lowercase (0014), whatever casing Zoho reports
+    @app.get("/signin/zoho")
+    async def start_zoho_sign_in(request: Request) -> Response:
+      return await zoho.authorize_redirect(request, redirect_uri)
+
+    @app.get("/auth/zoho")
+    async def finish_zoho_sign_in(request: Request) -> Response:
+      storage = app.storage.user
       try:
-        account = await accounts.lookup(email)
-      except psycopg.OperationalError:
-        logger.warning("the allowlist can't be read", exc_info=True)
-        return PlainTextResponse(text.DB_DOWN, status_code=503)
-      if account is not None:
-        gate.start(storage, request.session, email)
-        return RedirectResponse("/", status_code=303)
-      ended = EndReason.REFUSED
-    try:  # a failed reply leaves a valid sign-in alone: Back into Zoho's page replays a used state
-      await gate.check(storage, request.session, touch=False)
-    except SignedOutError, psycopg.OperationalError:
-      # In the cookie: server storage would keep a file for every cookieless request a script sends here.
-      request.session["signed_out"] = ended.value
+        # Authlib checks the audience only when asked to, and skips every id_token check when the reply has no id_token.
+        token = await zoho.authorize_access_token(
+          request,
+          claims_options={
+            "iss": {"essential": True, "value": settings.zoho_accounts_url},
+            "aud": {"essential": True, "value": settings.zoho_client_id},
+          },
+        )
+      except Exception:  # any fault in Zoho's reply, or in reaching Zoho, is a failed sign-in, never a signed-in one
+        logger.warning("a Zoho sign-in failed", exc_info=True)
+        token = {}
+      userinfo = token.get("userinfo")
+      email = None if userinfo is None else userinfo.get("email")
+      if userinfo is None:
+        ended = EndReason.FAILED
+      elif userinfo.get("email_verified") is not True or not isinstance(email, str):
+        ended = EndReason.REFUSED
+      else:
+        email = email.lower()  # badges are lowercase (0014), whatever casing Zoho reports
+        try:
+          account = await accounts.lookup(email)
+        except psycopg.OperationalError:
+          logger.warning("the allowlist can't be read", exc_info=True)
+          return PlainTextResponse(text.DB_DOWN, status_code=503)
+        if account is not None:
+          gate.start(storage, request.session, email)
+          return RedirectResponse("/", status_code=303)
+        ended = EndReason.REFUSED
+      try:  # a failed reply leaves a valid sign-in alone: Back into Zoho's page replays a used state
+        await gate.check(storage, request.session, touch=False)
+      except SignedOutError, psycopg.OperationalError:
+        # In the cookie: server storage would keep a file for every cookieless request a script sends here.
+        request.session["signed_out"] = ended.value
+        return RedirectResponse("/signin", status_code=303)
+      return RedirectResponse("/", status_code=303)
+
+  if logins:
+
+    @app.post("/signin/test")
+    async def test_sign_in(request: Request) -> Response:
+      form = await request.form()
+      email, password = str(form.get("email") or "").strip().lower(), str(form.get("password") or "")
+      expected = logins.get(email, "")
+      # Timing-safe, and compared for an unlisted email too, so a wrong guess tells nothing about which emails are listed.
+      if not hmac.compare_digest(password.encode(), expected.encode()) or not expected:
+        logger.info("a test sign-in failed for %r", email)
+        ended = EndReason.WRONG_PASSWORD
+      else:
+        try:
+          account = await accounts.lookup(email)
+        except psycopg.OperationalError:
+          logger.warning("the allowlist can't be read", exc_info=True)
+          return PlainTextResponse(text.DB_DOWN, status_code=503)
+        if account is not None:
+          gate.start(app.storage.user, request.session, email)
+          return RedirectResponse("/", status_code=303)
+        ended = EndReason.REFUSED
+      request.session["signed_out"] = ended.value  # in the cookie, as the Zoho callback's
       return RedirectResponse("/signin", status_code=303)
-    return RedirectResponse("/", status_code=303)
 
   @ui.page("/signin", title=settings.page_name)
   async def signin_page(request: Request) -> Response | None:
@@ -170,13 +206,19 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
       ui.label(settings.page_name).classes("signin-title")
       if (message := text.ended(reason, settings)) is not None:
         ui.label(message).classes("signin-message").mark("signin-message")
-      if reason is EndReason.REFUSED:  # §3.5: the message and another account, nothing else
+      if zoho is not None and reason is EndReason.REFUSED:  # §3.5: the message and another account, nothing else
         ui.button("Sign in with another account", on_click=lambda: ui.navigate.to(other_account)).classes("zoho-signin")
         ui.label("This signs you out of Zoho in this browser first.").classes("signin-note")
-      else:
+      elif zoho is not None:
         with ui.button(on_click=lambda: ui.navigate.to("/signin/zoho")).classes("zoho-signin").mark("zoho-signin"):
           ui.element("span").classes("zoho-logo")
           ui.label("Sign in using Zoho")
+      if logins:  # a plain form: only a response can set the cookie a sign-in is bound to, never a page event
+        with ui.element("form").props("method=post action=/signin/test").classes("test-signin").mark("test-signin"):
+          ui.label("Test sign-in").classes("bubble-heading")
+          ui.input("Email").props("name=email type=email autocomplete=username").classes("w-full")
+          ui.input("Password", password=True).props("name=password autocomplete=current-password").classes("w-full")
+          ui.button("Sign in").props("type=submit no-caps").classes("w-full")
     return None
 
   @ui.page("/", title=settings.page_name)
@@ -205,11 +247,14 @@ def serve() -> None:
     "PAGE_PUBLIC_URL": settings.public_url,
     "PAGE_SESSION_SECRET": settings.session_secret.get_secret_value(),
     "TIMECLOCK_WEB_PASSWORD": settings.db_password.get_secret_value(),
-    "ZOHO_CLIENT_ID": settings.zoho_client_id,
-    "ZOHO_CLIENT_SECRET": settings.zoho_client_secret.get_secret_value(),
   }
+  logins = settings.test_logins()  # refuses a malformed PAGE_TEST_ACCOUNTS
+  zoho = {"ZOHO_CLIENT_ID": settings.zoho_client_id, "ZOHO_CLIENT_SECRET": settings.zoho_client_secret.get_secret_value()}
+  if any(zoho.values()) or not logins:  # half of Zoho is a mistake, and without test accounts Zoho is the only way in
+    required |= zoho
   if missing := [name for name, value in required.items() if not value]:
-    raise ValueError(f"the page can't start without {', '.join(missing)}")
+    instead = "" if logins or any(zoho.values()) else " (or PAGE_TEST_ACCOUNTS instead of Zoho's two)"
+    raise ValueError(f"the page can't start without {', '.join(missing)}{instead}")
   # Socket logging creates no logs folder, and the page's volume starts empty; the healthcheck reads the heartbeat there.
   settings.log_loc_folder.mkdir(parents=True, exist_ok=True)
   pools = Pools.create(settings)

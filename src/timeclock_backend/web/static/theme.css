@@ -191,6 +191,16 @@ body.test-database {
   line-height: 1.5;
 }
 
+/* The test sign-in (README): below Zoho's button when both are on. */
+.test-signin {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
 /* Zoho's sign-in button, with Zoho's own logo (owner: Zoho's branding). */
 .zoho-signin {
   background: var(--sft-white) !important;
