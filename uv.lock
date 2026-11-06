@@ -1630,7 +1630,7 @@ wheels = [
 
 [[package]]
 name = "timeclock-backend"
-version = "0.7.0"
+version = "0.7.1"
 source = { editable = "." }
 dependencies = [
     { name = "aeth-ext", extra = ["async"] },
