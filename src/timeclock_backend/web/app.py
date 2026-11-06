@@ -28,6 +28,7 @@ from starlette.responses import PlainTextResponse, RedirectResponse, Response
 from . import text
 from .db import PoolAccounts, Pools
 from .gate import EndReason, Gate, SignedOutError
+from .live import Live
 from .settings import PageSettings
 from .shell import frame, prefs
 
@@ -63,6 +64,8 @@ _ACTIVITY_SCRIPT: Final = """<script>
 def build(  # noqa: C901, PLR0915 - one linear registration of every route and page; splitting it would only scatter it
   settings: PageSettings,
   accounts: Accounts,
+  pools: Pools,
+  live: Live,
   *,
   zoho_client_kwargs: Mapping[str, Any] | None = None,
   now: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -75,6 +78,8 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
   Args:
     settings: The page's settings.
     accounts: The production allowlist.
+    pools: The databases' pools, which the shift pages read through as the signed-in account.
+    live: The change notifications that refresh open pages.
     zoho_client_kwargs: Extra httpx client arguments for talking to Zoho (tests pass a transport).
     now: The clock the gate uses.
   """
@@ -270,6 +275,7 @@ def serve() -> None:
   # Socket logging creates no logs folder, and the page's volume starts empty; the healthcheck reads the heartbeat there.
   settings.log_loc_folder.mkdir(parents=True, exist_ok=True)
   pools = Pools.create(settings)
+  live = Live(pools)
   # asyncio holds tasks weakly, so the heartbeat is kept here, and its failure shuts the page down (as the clock).
   running: set[asyncio.Future[Any]] = set()
 
@@ -294,13 +300,14 @@ def serve() -> None:
       tz=settings.tz,
     )
     keep("Heartbeat", heartbeat)
+    keep("Live updates", live.run())  # it retries a lost database itself, so it ends only by a fault
 
   app.on_startup(lambda: keep("Startup", startup()))  # through keep: NiceGUI would only log the exception
   app.on_shutdown(pools.close)
   # A plain lambda: aeth_ext holds bound methods weakly. app.shutdown() sets uvicorn's should_exit.
   register_for_shutdown(lambda _trails: app.shutdown(), phase=ShutdownPhase.THREADED)
   uvicorn.Server.capture_signals = _no_signal_capture  # pyright: ignore[reportAttributeAccessIssue]  # as the clock
-  build(settings, PoolAccounts(pools))
+  build(settings, PoolAccounts(pools), pools, live)
   ui.run(
     host="0.0.0.0",  # Coolify's proxy reaches it over the coolify network
     port=settings.port,

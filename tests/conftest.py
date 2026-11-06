@@ -43,6 +43,7 @@ from timeclock_backend.bootstrap import bootstrap
 from timeclock_backend.databases import Database
 from timeclock_backend.web.db import PoolAccounts, Pools
 from timeclock_backend.web.gate import Account
+from timeclock_backend.web.live import Live
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -94,11 +95,15 @@ async def page(page_values: dict[str, str]) -> AsyncIterator[PageUnderTest]:
   accounts = FakeAccounts({"ann@example.com": Account(7, developer=False), "dev@example.com": Account(None, developer=True)})
   clock = FakeClock()
   page_sim.BUILD_ARGS.clear()
+  settings = page_settings(
+    **{"ZOHO_ACCOUNTS_URL": FakeZoho.ISSUER, "ZOHO_CLIENT_ID": "page", "PAGE_PUBLIC_URL": "http://test", **page_values}
+  )
+  pools = Pools.create(settings)  # never opened: these tests reach no database
   page_sim.BUILD_ARGS.update(
-    settings=page_settings(
-      **{"ZOHO_ACCOUNTS_URL": FakeZoho.ISSUER, "ZOHO_CLIENT_ID": "page", "PAGE_PUBLIC_URL": "http://test", **page_values}
-    ),
+    settings=settings,
     accounts=accounts,
+    pools=pools,
+    live=Live(pools),
     zoho_client_kwargs={"transport": zoho.transport},
     now=clock,
   )
