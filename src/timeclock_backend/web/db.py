@@ -91,19 +91,26 @@ class DatabaseChangedError(Exception):
 
 @asynccontextmanager
 async def editor_transaction(
-  pools: Pools, gate: Gate, storage: MutableMapping[str, Any], session: Mapping[str, Any], *, test_database: bool
+  pools: Pools,
+  gate: Gate,
+  storage: MutableMapping[str, Any],
+  session: Mapping[str, Any],
+  *,
+  test_database: bool,
+  touch: bool = True,
 ) -> AsyncGenerator[AsyncConnection[DictRow]]:
   """The one way page code reaches the data: the gate's check, then one transaction as the signed-in account's badge.
 
   `SET LOCAL` ends with the transaction, so a pooled connection never carries a badge into the next one. The production
   row's employee number goes to `timeclock.editor_employee_id` for the test database's self-edit check; production
-  ignores it (spec 2026-11-05 §4.6). `test_database` is the database the page shows, so a save never lands in the other.
+  ignores it (spec 2026-11-05 §4.6). `test_database` is the database the page shows, so a save never lands in the other;
+  `touch` is False for a read a live update starts, which isn't the user's activity.
 
   Raises:
     SignedOutError: The sign-in in `storage` has ended; nothing ran.
     DatabaseChangedError: The page shows the other database; nothing ran, and the page reloads.
   """
-  signin = await gate.check(storage, session, touch=True)
+  signin = await gate.check(storage, session, touch=touch)
   if signin.test_database != test_database:
     raise DatabaseChangedError
   pool = pools.test if signin.test_database else pools.production
