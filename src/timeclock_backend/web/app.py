@@ -31,6 +31,7 @@ from .gate import EndReason, Gate, SignedOutError
 from .live import Live
 from .settings import PageSettings
 from .shell import frame, prefs
+from .shift_editor import draw_shift_editor
 from .shift_list import draw_shift_list
 
 if TYPE_CHECKING:
@@ -51,14 +52,27 @@ _TEST_FORM_BYTES: Final = 4096
 # The sign-in page and its methods' routes, and the icon, which the sign-in page's tab shows too.
 _PUBLIC_PATHS: Final = frozenset({"/signin", "/signin/zoho", "/auth/zoho", "/signin/test", "/favicon.ico"})
 _PUBLIC_PREFIXES: Final = ("/static/", "/_nicegui")  # the page's files and NiceGUI's (its assets and socket)
-# Activity in the browser, at most once a minute, so working in a page without loading another keeps the sign-in.
+# Activity in the browser, at most once a minute, so working in a page without loading another keeps the sign-in; and
+# `page-offline` on the body while NiceGUI's socket is down, for the Reconnecting chip (spec §6.2).
 _ACTIVITY_SCRIPT: Final = """<script>
 (() => {
   let last = 0;
   const ping = () => { if (Date.now() - last > 60000) { last = Date.now(); emitEvent("page_activity"); } };
   addEventListener("pointerdown", ping, true);
   addEventListener("keydown", ping, true);
+  const watch = () => {
+    if (!window.socket) return setTimeout(watch, 200);
+    window.socket.on("disconnect", () => document.body.classList.add("page-offline"));
+    window.socket.on("connect", () => document.body.classList.remove("page-offline"));
+  };
+  watch();
 })();
+</script>"""
+# The sign-in page drops every draft: a draft lasts until it's saved, discarded, or its sign-in ends (spec §6.2).
+_CLEAR_DRAFTS: Final = """<script>
+try {
+  for (const key of Object.keys(localStorage)) if (key.startsWith("timeclock-draft:")) localStorage.removeItem(key);
+} catch {}
 </script>"""
 
 
@@ -218,6 +232,7 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
     else:
       return RedirectResponse("/", status_code=303)
     ui.dark_mode(prefs()["dark"])
+    ui.add_body_html(_CLEAR_DRAFTS)
     with ui.column().classes("signin-card"):
       ui.element("div").classes("page-logo")
       ui.label(settings.page_name).classes("signin-title")
@@ -243,6 +258,12 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
     signin: SignIn = request.state.signin
     frame(signin, settings, gate)
     await draw_shift_list(signin, settings=settings, pools=pools, gate=gate, live=live, now=now, query=request.query_params)
+
+  @ui.page("/shift", title=settings.page_name)
+  async def shift_page(request: Request) -> None:
+    signin: SignIn = request.state.signin
+    frame(signin, settings, gate)
+    await draw_shift_editor(signin, settings=settings, pools=pools, gate=gate, live=live, now=now, query=request.query_params)
 
 
 @contextlib.contextmanager
@@ -314,6 +335,8 @@ def serve() -> None:
     dark=True,
     reload=False,
     show=False,
+    # An editor's page outlives a dropped connection this long, its draft with it (spec §6.2); the gate ends it anyway.
+    reconnect_timeout=settings.idle_minutes * 60,
     storage_secret=settings.session_secret.get_secret_value(),
     # `__Host-`: no sibling subdomain can set it (session fixation). `lax` still sends it on Zoho's redirect back. It
     # carries the browser's storage id (preferences, why a sign-in ended) and is re-sent only when changed, so it lasts

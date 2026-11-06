@@ -90,6 +90,7 @@ def frame(signin: SignIn, settings: PageSettings, gate: Gate) -> None:  # noqa: 
     with ui.row().classes("page-nav"):
       ui.link("Shifts", "/").classes("page-nav-link on")
     ui.space()
+    ui.label("Reconnecting...").classes("chip orange page-reconnecting")  # shown by body.page-offline (theme.css)
     ui.label(signin.email).classes("page-account").mark("page-account")
     with ui.button().props("flat round").classes("page-gear").mark("gear"):
       ui.element("span").classes("page-icon icon-gear")  # the glyph comes from the theme (§2)

@@ -29,6 +29,8 @@ const WORD = {
   lunch_end: "lunch end",
 };
 const KINDS = Object.keys(LABEL);
+const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const NUMBERS = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
 const OFFLINE = "The connection is interrupted. You can keep editing, and save your changes as soon as it's back.";
 const STORED_VERSION = 1;
@@ -85,7 +87,12 @@ export function keep(draft, slot, choice) {
   return next;
 }
 
-export const moveIn = (draft, strayKey, shiftKey) => ({ ...draft, moved: new Map(draft.moved).set(strayKey, shiftKey) });
+// A stray into a shift that day (spec §6.8), which the editor then shows too.
+export function moveIn(draft, strayKey, shiftKey) {
+  const shift = entries(punches(draft), ALL).find((e) => e.key === shiftKey);
+  const focus = new Set([...draft.focus, ...(shift?.punches ?? []).map((p) => p.id)]);
+  return { ...draft, focus, moved: new Map(draft.moved).set(strayKey, shiftKey) };
+}
 
 // The punches as the draft has them, by (at, id): edited ones carry PENDING, as rules.applyRecords marks them.
 export function punches(draft) {
@@ -323,24 +330,26 @@ export function blockers(draft, { connected = true, readOnly = false } = {}) {
   return found;
 }
 
-// "Your changes" (spec §8), by where each punch was.
-export function changes(draft, { tz, h24 }) {
+// "Your changes" (spec §8), by where each punch was: [{id, text}], the id the one Undo puts back.
+export function changeList(draft, { tz, h24 }) {
   const time = (ms) => clockTime(ms, tz, h24);
   const current = byId(draft);
   const lines = [];
   for (const [id, e] of draft.edits) {
     const was = current.get(id);
     if (e.new) {
-      if (!e.removed) lines.push([e.at, `Added ${article(WORD[e.kind])} at ${time(e.at)}`]);
+      if (!e.removed) lines.push([e.at, `Added ${article(WORD[e.kind])} at ${time(e.at)}`, id]);
     } else if (was === undefined) continue; // a conflict, which says so itself
-    else if (e.removed) lines.push([was.at, `Removed the ${WORD[was.kind]} at ${time(was.at)}`]);
-    else if (e.kind !== was.kind && e.at !== was.at) lines.push([was.at, `${LABEL[was.kind]} at ${time(was.at)} to ${LABEL[e.kind]} at ${time(e.at)}`]);
-    else if (e.at !== was.at) lines.push([was.at, `${LABEL[was.kind]}: ${time(was.at)} to ${time(e.at)}`]);
-    else if (e.kind !== was.kind) lines.push([was.at, `${time(was.at)}: ${LABEL[was.kind]} to ${LABEL[e.kind]}`]);
-    else if (e.confirmed) lines.push([was.at, `Marked the ${was.automatic ? "automatic " : ""}${WORD[was.kind]} at ${time(was.at)} as correct`]);
+    else if (e.removed) lines.push([was.at, `Removed the ${WORD[was.kind]} at ${time(was.at)}`, id]);
+    else if (e.kind !== was.kind && e.at !== was.at) lines.push([was.at, `${LABEL[was.kind]} at ${time(was.at)} to ${LABEL[e.kind]} at ${time(e.at)}`, id]);
+    else if (e.at !== was.at) lines.push([was.at, `${LABEL[was.kind]}: ${time(was.at)} to ${time(e.at)}`, id]);
+    else if (e.kind !== was.kind) lines.push([was.at, `${time(was.at)}: ${LABEL[was.kind]} to ${LABEL[e.kind]}`, id]);
+    else if (e.confirmed) lines.push([was.at, `Marked the ${was.automatic ? "automatic " : ""}${WORD[was.kind]} at ${time(was.at)} as correct`, id]);
   }
-  return lines.sort((a, b) => a[0] - b[0]).map(([, line]) => line);
+  return lines.sort((a, b) => a[0] - b[0]).map(([, text, id]) => ({ id, text }));
 }
+
+export const changes = (draft, opts) => changeList(draft, opts).map((c) => c.text);
 
 // The same, as the rows a save writes, for technical details (spec §11).
 export function writes(draft) {
@@ -356,6 +365,18 @@ export function writes(draft) {
 }
 
 // The "Needs fixing" banner (spec §8), or null when the entry holds no problem.
+// "Monday, November 2, 8:00 AM to 4:30 PM"; the end names its day when it's another one.
+export function span(entry, { tz, h24 }) {
+  const time = (ms) => clockTime(ms, tz, h24);
+  const day = (ms) => {
+    const [y, m, d] = localDate(ms, tz).split("-").map(Number);
+    return `${DAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}, ${MONTHS[m - 1]} ${d}`;
+  };
+  const start = `${day(entry.start)}, ${time(entry.start)}`;
+  if (entry.end === null) return `${start} to working`;
+  return `${start} to ${localDate(entry.end, tz) === localDate(entry.start, tz) ? "" : `${day(entry.end)}, `}${time(entry.end)}`;
+}
+
 export function banner(entry, { tz, h24 }) {
   const time = (ms) => clockTime(ms, tz, h24);
   if (entry.kind === "stray") {

@@ -39,13 +39,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_CHIP: Final = {
-  Flag.NEEDS_FIXING: "red",
-  Flag.AUTOMATIC: "orange",
-  Flag.AUTOMATIC_FIXED: "grey",
-  Flag.CHANGED: "grey",
-  Flag.WORKING: "blue",
-}
 # The attention bar's counts, in the mockup's order: automatic clock-outs, then what needs fixing.
 _ATTENTION_ORDER: Final = ("automatic", *(f"extra:{kind}" for kind in PunchKind), "stray", "mixed")
 
@@ -249,23 +242,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
               ui.label(text.hm(total.worked)).classes("tot-hours").mark(f"week-total-{person.id}")
               ui.label("worked")
           if technical:
-            group_name = ctx.groups.get(person.group_id, "?")
-            ui.label(
-              " · ".join(
-                (
-                  f"employee id {person.id}",
-                  f"username {person.username}",
-                  f"group {group_name} ({person.group_id})",
-                  f"role {person.role}",
-                  f"fingerprint exempt {'yes' if person.fingerprint_exempt else 'no'}",
-                  text.count(person.fingerprints, "fingerprint"),
-                  "active" if person.active else "switched off",
-                  f"phone {person.phone or 'none'}",
-                  f"email {person.email or 'none'}",
-                  f"updated {text.stamp(person.updated_at, tz, h24=h24)}",
-                )
-              )
-            ).classes("empdet")
+            ui.label(text.employee_details(person, ctx.groups, tz, h24=h24)).classes("empdet")
           with ui.element("table").classes("sh"):
             with ui.element("tr"):
               for heading in ("Day", "Clock in", "Clock out", "Breaks", "Lunch"):
@@ -320,7 +297,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
                     ui.element("span").classes("page-icon icon-lock")
                   for flag in found_flags:
                     label = text.flag_label(flag, problem(e), len(e.ignored))
-                    ui.label(label).classes(f"chip {_CHIP[flag]}")
+                    ui.label(label).classes(f"chip {text.CHIP[flag]}")
       if not drawn:
         ui.label("No shifts this week." if not shown else "No shifts need attention this week.").classes("muted empty")
 

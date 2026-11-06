@@ -131,6 +131,19 @@ ORDER BY eff.employee_id, eff.at, eff.id
 """
 
 
+async def punch_time(conn: AsyncConnection[DictRow], *, employee_id: int, punch_id: UUID) -> datetime | None:
+  """The punch's corrected time; None when it isn't the employee's, or is voided."""
+  row = await (
+    await conn.execute(
+      "SELECT coalesce(n.new_at, p.at) AS at, n.action FROM punches p LEFT JOIN LATERAL ("
+      " SELECT c.action, c.new_at FROM punch_corrections c WHERE c.punch_id = p.id ORDER BY c.recorded_at DESC, c.id DESC LIMIT 1"
+      ") n ON true WHERE p.id = %s AND p.employee_id = %s",
+      (punch_id, employee_id),
+    )
+  ).fetchone()
+  return None if row is None or row["action"] == "void" else row["at"]
+
+
 async def load_punches(
   conn: AsyncConnection[DictRow], *, start: datetime, end: datetime | None, employee_id: int | None = None
 ) -> dict[int, list[PagePunch]]:

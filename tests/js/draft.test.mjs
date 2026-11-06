@@ -127,6 +127,18 @@ test("a stray that day is offered, and once moved in joins the slot of its kind"
   assert.deepEqual(found.strays, []);
 });
 
+test("a stray moved in from its own editor brings its shift into view", () => {
+  const draft = d.moveIn(d.newDraft(base(withStray, { focus: [id(3)] })), id(3), id(1));
+  assert.deepEqual(
+    d.shown(draft).map((e) => e.key),
+    [id(1), id(3)],
+  );
+  assert.deepEqual(
+    d.changeList(d.remove(draft, id(2)), { tz: TZ, h24: false }),
+    [{ id: id(2), text: "Removed the clock-out at 3:30 PM" }],
+  );
+});
+
 test("a stray's own sections mark its missing clock-in", () => {
   const draft = d.newDraft(base(withStray, { focus: [id(3)] }));
   const [stray] = d.shown(draft);
@@ -298,6 +310,16 @@ test("the needs-fixing banner says what the hours do", () => {
     "The hours ignore 2 punches in this shift: Break end at 9:44 AM, Lunch end at 1:02 PM.",
   );
   assert.equal(banner(plain), null);
+});
+
+test("a shift's span names its end's day when that's another day", () => {
+  const span = (punches) => d.span(d.shown(d.newDraft(base(punches)))[0], { tz: TZ, h24: false });
+  assert.equal(span(plain), "Tuesday, November 3, 7:00 AM to 3:30 PM");
+  assert.equal(
+    span([punch(1, "clock_in", 2, "08:00"), punch(2, "clock_out", 3, "15:30")]),
+    "Monday, November 2, 8:00 AM to Tuesday, November 3, 3:30 PM",
+  );
+  assert.equal(span([punch(1, "clock_in", 6, "08:00")]), "Friday, November 6, 8:00 AM to working");
 });
 
 test("typed times", () => {
