@@ -20,6 +20,8 @@ Coolify reaches the clocks themselves through [coolify-tunnel](https://github.co
 
 The compose service `timeclock-web` runs the shift corrections page from the same image (`timeclock-web` console script, NiceGUI on port 8080, behind Coolify's proxy). Managers sign in with Zoho, or with an email and password from `PAGE_TEST_ACCOUNTS` while testing; either way only an email listed in `backend.editors` on `timeclock` gets in, and every page load and save checks the sign-in again. The page's PostgreSQL login, `timeclock_web`, has no password until the owner sets one, and the sidecar refuses it from anywhere but the page's address on the private `timeclock-web-db` network (`10.240.17.0/28`).
 
+The page opens on the week's shift list: every employee's shifts, sorted by last name, with a week total each, the Employee, Group and Role filters, and a bar counting what needs attention (automatic clock-outs, extra punches, strays). A row opens its shift in the editor: a timeline whose markers drag to the minute, the shift's times to type, breaks and lunches, the hours before and after, and History. A save writes one edit with its note; another editor's change shows up live, and one to a punch you also changed asks whose to keep. The draft lives in the browser, so a dropped connection loses nothing. Add shift opens the same editor empty for an employee and a day. Your own shifts open read-only.
+
 | Variable | Meaning |
 | --- | --- |
 | `PAGE_PUBLIC_URL` | The page's address, e.g. `https://corrections.example.com`; Zoho redirects back to `<it>/auth/zoho` |
@@ -27,6 +29,7 @@ The compose service `timeclock-web` runs the shift corrections page from the sam
 | `TIMECLOCK_WEB_PASSWORD` | 48 random characters; the `timeclock_web` login's password |
 | `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET` | Zoho sign-in: the page's Server-based Application in Zoho's API console |
 | `PAGE_TEST_ACCOUNTS` | Test sign-in: a JSON object of email to password (16 random characters or more), e.g. `{"name@example.com": "..."}`; empty turns it off. Mark it literal in Coolify |
+| `PAGE_FAULT_CONTACT` | Optional: who the editor's "found a problem in itself" message says to tell; `Jacob` when unset |
 
 The page refuses to start without the first three and at least one sign-in method (both Zoho variables, `PAGE_TEST_ACCOUNTS`, or both); the other services deploy regardless. Setup, once:
 
