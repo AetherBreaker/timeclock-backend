@@ -263,6 +263,11 @@ async def save_shift(  # noqa: C901, PLR0911 - one save's checks in the order th
         "refused": f"This overlaps {person.first_name}'s shift on {when} to {end}. Change the times, or open that shift instead.",
         "open": f"/shift?{urlencode({'employee': employee_id, 'punch': met.punches[0].id})}",
       }
+    # Left open, it would run on to now and the next automatic clock-out: only someone working now may be added so.
+    if added and all(p.kind is not PunchKind.CLOCK_OUT for p in added):
+      start = added[0].at
+      if start.astimezone(ctx.tz).date() != as_of.astimezone(ctx.tz).date() or any(p.at > start for p in punches):
+        return {"refused": text.ADD_CLOCK_OUT, "open": None}
   if (refused := refusal(punches, after, touched, as_of=as_of)) is not None:
     return {"refused": _refused(refused, after, ctx.tz, h24=h24), "open": None}
   if not payload.get("acceptServer"):

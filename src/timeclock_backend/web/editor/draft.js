@@ -36,6 +36,7 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July", 
 const NUMBERS = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
 const OFFLINE = "The connection is interrupted. You can keep editing, and save your changes as soon as it's back.";
 const STORED_VERSION = 1;
+const ADD_CLOCK_OUT = "Add the clock-out to save. Only a shift that started today, with nothing after it, can stay open."; // text.py's ADD_CLOCK_OUT
 
 const byId = (draft) => new Map(draft.base.punches.map((p) => [p.id, p]));
 const capital = (s) => s[0].toUpperCase() + s.slice(1);
@@ -361,6 +362,12 @@ export function blockers(draft, { connected = true, readOnly = false } = {}) {
   for (const kind of KINDS) if (choices.has(kind)) found.push(`Choose which ${WORD[kind]} to keep to save.`);
   if (adding(draft) && !fresh(draft).some((p) => p.kind === "clock_in")) found.push("Add a clock-in to save.");
   else if (overlap(draft) !== null) found.push("Change the times so it doesn't overlap that shift.");
+  else if (adding(draft) && !fresh(draft).some((p) => p.kind === "clock_out")) {
+    // Open, it runs on to now and the next automatic clock-out: only someone working now, as save_shift checks too.
+    const start = Math.min(...fresh(draft).map((p) => p.at));
+    const today = localDate(start, draft.base.tz) === localDate(draft.base.now, draft.base.tz);
+    if (!today || draft.base.punches.some((p) => p.at > start)) found.push(ADD_CLOCK_OUT);
+  }
   else if (choices.size === 0 && refused(draft) !== null) found.push("Fix the punches marked in red to save.");
   if (found.length === 0 && recordsOf(draft).length === 0) found.push("Nothing to save yet.");
   if (!connected) found.push(OFFLINE);

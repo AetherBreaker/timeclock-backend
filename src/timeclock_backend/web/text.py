@@ -29,6 +29,8 @@ WRONG_PASSWORD = "That email and password don't match a test account."
 DB_DOWN = "The database can't be reached right now. Try again in a minute."
 OWN_SHIFT = "This is your own shift. Another editor has to change it."
 SAVE_FAILED = "The save didn't go through. Reload the page and try again; your changes are kept in this browser."
+# An added shift with no clock-out (§6.13); `editor/draft.js` says the same.
+ADD_CLOCK_OUT = "Add the clock-out to save. Only a shift that started today, with nothing after it, can stay open."
 
 
 def ended(reason: EndReason, settings: PageSettings) -> str | None:  # noqa: PLR0911 - one return per reason

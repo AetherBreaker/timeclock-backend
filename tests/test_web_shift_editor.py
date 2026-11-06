@@ -355,3 +355,19 @@ async def test_only_the_shift_editor_outlives_a_dropped_connection(page: PageUnd
   assert timeouts["/shift"] == timeouts["/shift/new"] == page_sim.BUILD_ARGS["settings"].idle_minutes * 60
   assert timeouts["/"] is None
   assert timeouts["/signin"] is None
+
+
+async def test_an_added_shift_from_before_today_needs_its_clock_out(pages_db: PagesDb) -> None:
+  bob = pages_db.employees[1]
+  yesterday = [_edit(uuid4(), kind="clock_in", at=_ny(4, "08:00"), new=True)]
+  assert await _save(pages_db, bob, yesterday, focus=[]) == {"refused": text.ADD_CLOCK_OUT, "open": None}
+  today = [_edit(uuid4(), kind="clock_in", at=_ny(5, "08:00"), new=True)]  # the fake clock's 9:00 AM
+  assert (await _save(pages_db, bob, today, focus=[])).keys() == {"ok", "base"}
+
+
+async def test_an_added_open_shift_with_punches_after_it_needs_its_clock_out(pages_db: PagesDb) -> None:
+  bob = pages_db.employees[1]
+  pages_db.punch(bob, "clock_in", _ny(5, "08:15"))
+  pages_db.punch(bob, "clock_out", _ny(5, "08:45"))
+  earlier = [_edit(uuid4(), kind="clock_in", at=_ny(5, "07:00"), new=True)]
+  assert await _save(pages_db, bob, earlier, focus=[]) == {"refused": text.ADD_CLOCK_OUT, "open": None}

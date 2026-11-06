@@ -380,6 +380,16 @@ test("an added shift is its new punches, summed up in one line", () => {
   assert.equal(d.joinSplit(adding(), draft), null);
 });
 
+test("an added shift left open has to start today, with nothing after it", () => {
+  const needed = "Add the clock-out to save. Only a shift that started today, with nothing after it, can stay open.";
+  const tuesday = d.add(adding(), "clock_in", at(3, "08:00")); // now is Friday the 6th
+  assert.ok(d.blockers(tuesday).includes(needed));
+  assert.ok(!d.blockers(d.add(tuesday, "clock_out", at(3, "16:00"))).includes(needed));
+  const friday = (punches) => d.add(d.newDraft(base(punches, { focus: [], day: "2026-11-06" })), "clock_in", at(6, "08:00"));
+  assert.deepEqual(d.blockers(friday([punch(1, "clock_in", 4, "07:55"), punch(2, "clock_out", 4, "12:10")])), []);
+  assert.ok(d.blockers(friday([punch(1, "clock_in", 6, "09:00"), punch(2, "clock_out", 6, "10:00")])).includes(needed));
+});
+
 test("an added shift that overlaps one the employee has says which", () => {
   let draft = adding();
   draft = d.add(d.add(draft, "clock_in", at(4, "08:00"), id(3)), "clock_out", at(4, "16:30"), id(4));
