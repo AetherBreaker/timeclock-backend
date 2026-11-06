@@ -202,6 +202,7 @@ def serve() -> None:
   """
   settings = PageSettings.get_settings()
   required = {
+    "PAGE_PUBLIC_URL": settings.public_url,
     "PAGE_SESSION_SECRET": settings.session_secret.get_secret_value(),
     "TIMECLOCK_WEB_PASSWORD": settings.db_password.get_secret_value(),
     "ZOHO_CLIENT_ID": settings.zoho_client_id,

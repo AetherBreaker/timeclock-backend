@@ -14,7 +14,7 @@ class PageSettings(BaseSettings):
   The empty defaults let tests import this module; `serve()` refuses to start without them.
   """
 
-  public_url: Annotated[str, Field(alias="PAGE_PUBLIC_URL")] = "http://localhost:8080"
+  public_url: Annotated[str, Field(alias="PAGE_PUBLIC_URL")] = ""
   page_name: Annotated[str, Field(alias="PAGE_NAME")] = "Shift corrections"
   session_secret: Annotated[SecretStr, Field(alias="PAGE_SESSION_SECRET")] = SecretStr("")
   session_hours: Annotated[int, Field(alias="PAGE_SESSION_HOURS", gt=0)] = 8
