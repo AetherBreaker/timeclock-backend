@@ -9,7 +9,7 @@ import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, override
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote
 
 # Third party imports
 import psycopg
@@ -19,6 +19,7 @@ from aeth_ext.errors.shutdown import ShutdownPhase, register_for_shutdown
 from aeth_ext.monitoring import run_heartbeat_async
 from authlib.integrations.starlette_client import OAuth
 from nicegui import app, ui
+from pydantic import SecretStr
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request  # noqa: TC002 - FastAPI reads route annotations at runtime
 from starlette.responses import PlainTextResponse, RedirectResponse, Response
@@ -43,6 +44,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 STATIC_DIR: Final = Path(__file__).with_name("static")
+# The test sign-in's form, an email and a password, is a few hundred bytes; anything bigger is refused unread.
+_TEST_FORM_BYTES: Final = 4096
 # The sign-in page and its methods' routes, and the icon, which the sign-in page's tab shows too.
 _PUBLIC_PATHS: Final = frozenset({"/signin", "/signin/zoho", "/auth/zoho", "/signin/test", "/favicon.ico"})
 _PUBLIC_PREFIXES: Final = ("/static/", "/_nicegui")  # the page's files and NiceGUI's (its assets and socket)
@@ -167,12 +170,20 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
 
     @app.post("/signin/test")
     async def test_sign_in(request: Request) -> Response:
-      form = await request.form()
-      email, password = str(form.get("email") or "").strip().lower(), str(form.get("password") or "")
-      expected = logins.get(email, "")
+      # Read by hand, capped, as the urlencoded body a browser's form sends: Starlette's form parser would take a megabyte
+      # a field from anyone, spool multipart files to disk, and decode with whatever charset the request names.
+      body = b""
+      async for chunk in request.stream():
+        body += chunk
+        if len(body) > _TEST_FORM_BYTES:
+          return PlainTextResponse("That's too much for a sign-in.", status_code=413)
+      fields = dict(parse_qsl(body.decode(errors="replace")))  # a multipart body just matches nothing
+      email, password = fields.get("email", "").strip().lower(), fields.get("password", "")
+      expected = logins.get(email)
       # Timing-safe, and compared for an unlisted email too, so a wrong guess tells nothing about which emails are listed.
-      if not hmac.compare_digest(password.encode(), expected.encode()) or not expected:
-        logger.info("a test sign-in failed for %r", email)
+      known = (expected or SecretStr("")).get_secret_value().encode()
+      if not hmac.compare_digest(password.encode(), known) or expected is None:
+        logger.info("a test sign-in failed for %r", email[:100])
         ended = EndReason.WRONG_PASSWORD
       else:
         try:
@@ -243,16 +254,17 @@ def serve() -> None:
     ValueError: A setting the page can't run without is empty.
   """
   settings = PageSettings.get_settings()
+  # Whether each is set, never its value: aeth_ext's crash alert shows every frame's locals.
   required = {
-    "PAGE_PUBLIC_URL": settings.public_url,
-    "PAGE_SESSION_SECRET": settings.session_secret.get_secret_value(),
-    "TIMECLOCK_WEB_PASSWORD": settings.db_password.get_secret_value(),
+    "PAGE_PUBLIC_URL": bool(settings.public_url),
+    "PAGE_SESSION_SECRET": bool(settings.session_secret.get_secret_value()),
+    "TIMECLOCK_WEB_PASSWORD": bool(settings.db_password.get_secret_value()),
   }
   logins = settings.test_logins()  # refuses a malformed PAGE_TEST_ACCOUNTS
-  zoho = {"ZOHO_CLIENT_ID": settings.zoho_client_id, "ZOHO_CLIENT_SECRET": settings.zoho_client_secret.get_secret_value()}
+  zoho = {"ZOHO_CLIENT_ID": bool(settings.zoho_client_id), "ZOHO_CLIENT_SECRET": bool(settings.zoho_client_secret.get_secret_value())}
   if any(zoho.values()) or not logins:  # half of Zoho is a mistake, and without test accounts Zoho is the only way in
     required |= zoho
-  if missing := [name for name, value in required.items() if not value]:
+  if missing := [name for name, present in required.items() if not present]:
     instead = "" if logins or any(zoho.values()) else " (or PAGE_TEST_ACCOUNTS instead of Zoho's two)"
     raise ValueError(f"the page can't start without {', '.join(missing)}{instead}")
   # Socket logging creates no logs folder, and the page's volume starts empty; the healthcheck reads the heartbeat there.
