@@ -101,9 +101,9 @@ async def test_a_developer_gets_their_chosen_database(gate: Gate) -> None:
   storage: dict[str, Any] = {}
   session: dict[str, Any] = {}
   gate.start(storage, session, DEV)
-  gate.choose_database(DEV, test=True)
+  await gate.choose_database(storage, session, test=True)
   assert (await gate.check(storage, session, touch=True)).test_database
-  gate.choose_database(DEV, test=False)
+  await gate.choose_database(storage, session, test=False)
   assert not (await gate.check(storage, session, touch=True)).test_database
 
 
@@ -111,7 +111,7 @@ async def test_losing_the_developer_mark_returns_to_production(gate: Gate, accou
   storage: dict[str, Any] = {}
   session: dict[str, Any] = {}
   gate.start(storage, session, DEV)
-  gate.choose_database(DEV, test=True)
+  await gate.choose_database(storage, session, test=True)
   accounts.accounts[DEV] = Account(None, developer=False)
   assert not (await gate.check(storage, session, touch=True)).test_database
 
@@ -119,7 +119,10 @@ async def test_losing_the_developer_mark_returns_to_production(gate: Gate, accou
 async def test_another_accounts_choice_does_not_apply(gate: Gate) -> None:
   storage: dict[str, Any] = {}
   session: dict[str, Any] = {}
-  gate.choose_database(BOB, test=True)
+  bob_storage: dict[str, Any] = {}
+  bob_session: dict[str, Any] = {}
+  gate.start(bob_storage, bob_session, BOB)
+  await gate.choose_database(bob_storage, bob_session, test=True)
   gate.start(storage, session, DEV)
   assert not (await gate.check(storage, session, touch=True)).test_database
 
@@ -158,3 +161,14 @@ async def test_a_sign_in_belongs_to_the_browser_that_completed_it(gate: Gate) ->
   gate.start(storage, session, DEV)  # the next sign-in in the same browser
   assert await _ended(gate, storage, kept) is EndReason.NONE
   assert (await gate.check(storage, session, touch=True)).email == DEV  # the copy ended nothing
+
+
+async def test_choosing_a_database_needs_a_valid_sign_in(gate: Gate) -> None:
+  storage: dict[str, Any] = {}
+  session: dict[str, Any] = {}
+  gate.start(storage, session, DEV)
+  gate.end(storage, EndReason.SIGNED_OUT)  # in another tab, while this one still shows the switch
+  with pytest.raises(SignedOutError):
+    await gate.choose_database(storage, session, test=True)
+  gate.start(storage, session, DEV)
+  assert not (await gate.check(storage, session, touch=False)).test_database

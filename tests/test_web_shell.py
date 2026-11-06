@@ -105,3 +105,11 @@ def test_the_theme_sets_quasars_colors_for_both_modes() -> None:
     assert f"{token}:" in css
   assert 'url("/static/SFT-Logo-June-2022-color.svg")' in css
   assert 'url("/static/zoho-logo.svg")' in css
+
+
+async def test_the_switch_does_nothing_once_the_sign_in_has_ended(page: PageUnderTest) -> None:
+  await sign_in(page, DEVELOPER)
+  del page.accounts.accounts[DEVELOPER]  # removed from the allowlist while the page is open
+  page.user.find(marker="pref-test-db").click()
+  await page.user.should_see(marker="signin-message")
+  assert app.storage.general.get("databases", {}) == {}

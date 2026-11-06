@@ -139,8 +139,13 @@ class Gate:
     storage.pop("signin", None)
     storage["signed_out"] = reason.value
 
-  def choose_database(self, email: str, *, test: bool) -> None:
-    """Remember a developer's database choice; `check` honors it only while the account is marked developer."""
+  async def choose_database(self, storage: MutableMapping[str, Any], session: Mapping[str, Any], *, test: bool) -> None:
+    """Remember the signed-in account's database choice; `check` honors it only while the account is marked developer.
+
+    Raises:
+      SignedOutError: As `check`; nothing changed.
+    """
+    email = (await self.check(storage, session, touch=True)).email
     databases = {k: v for k, v in self._general.get("databases", {}).items() if k != email}
     if test:
       databases[email] = "test"

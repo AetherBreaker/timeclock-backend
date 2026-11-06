@@ -172,3 +172,8 @@ async def test_a_listed_email_needs_no_employee_number(page: PageUnderTest) -> N
   page.accounts.accounts["ann@example.com"] = Account(None, developer=False)
   await sign_in(page)
   await page.user.should_see("Signed in as ann@example.com")
+
+
+async def test_the_tab_icon_needs_no_sign_in(page: PageUnderTest) -> None:
+  response = await page.user.http_client.get("/favicon.ico")  # the sign-in page shows it too
+  assert response.status_code == httpx.codes.OK

@@ -77,11 +77,11 @@ services:
       - TZ=America/New_York
       - LOG_CONN_HOST=central-log-server
       - PAGE_POSTGRES_HOST=10.240.17.2  # Postgres's address on timeclock-web-db, so the page always connects over it
-      - PAGE_PUBLIC_URL=${PAGE_PUBLIC_URL:?}
-      - PAGE_SESSION_SECRET=${PAGE_SESSION_SECRET:?}
-      - TIMECLOCK_WEB_PASSWORD=${TIMECLOCK_WEB_PASSWORD:?}
-      - ZOHO_CLIENT_ID=${ZOHO_CLIENT_ID:?}
-      - ZOHO_CLIENT_SECRET=${ZOHO_CLIENT_SECRET:?}
+      - PAGE_PUBLIC_URL=${PAGE_PUBLIC_URL:-}
+      - PAGE_SESSION_SECRET=${PAGE_SESSION_SECRET:-}
+      - TIMECLOCK_WEB_PASSWORD=${TIMECLOCK_WEB_PASSWORD:-}
+      - ZOHO_CLIENT_ID=${ZOHO_CLIENT_ID:-}
+      - ZOHO_CLIENT_SECRET=${ZOHO_CLIENT_SECRET:-}
     networks:
       coolify: {}
       timeclock-web-db:

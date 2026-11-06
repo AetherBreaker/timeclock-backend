@@ -58,8 +58,16 @@ def frame(signin: SignIn, settings: PageSettings, gate: Gate) -> None:  # noqa: 
     gate.end(app.storage.user, EndReason.SIGNED_OUT)
     ui.navigate.to("/signin")
 
-  def choose_database(*, test: bool) -> None:
-    gate.choose_database(signin.email, test=test)
+  async def choose_database(*, test: bool) -> None:
+    nonlocal leaving
+    leaving = True
+    try:
+      await gate.choose_database(app.storage.user, app.storage.browser, test=test)
+    except SignedOutError:
+      ui.navigate.to("/signin")
+      return
+    except psycopg.OperationalError:
+      logger.warning("the allowlist can't be read", exc_info=True)  # the reload shows it, then the choice as it stands
     ui.navigate.reload()
 
   def set_pref(name: str, e: ValueChangeEventArguments) -> None:
