@@ -316,6 +316,14 @@ test("the records a save writes, for technical details", () => {
   ]);
 });
 
+test("a punch's technical details: its id, clock, login and when the server got it", () => {
+  const p = punch(1, "clock_in", 4, "08:15", { receivedAt: at(4, "08:15") + 3000 });
+  assert.equal(d.punchDetail(p, { tz: TZ }), "punch 00000001… · clock main-office · written by timeclock_clocks · received Nov 4, 8:15:03 AM");
+  assert.equal(d.punchDetail(p, { tz: TZ, h24: true }), "punch 00000001… · clock main-office · written by timeclock_clocks · received Nov 4, 08:15:03");
+  const added = d.punches(d.add(d.newDraft(base([p])), "clock_out", at(4, "16:00"), id(9))).find((q) => q.id === id(9));
+  assert.equal(d.punchDetail(added, { tz: TZ }), "punch 00000009… · new, written when you save");
+});
+
 test("the needs-fixing banner says what the hours do", () => {
   const banner = (punches, focus) => {
     const draft = d.newDraft(base(punches, focus === undefined ? {} : { focus }));

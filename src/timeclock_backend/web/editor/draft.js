@@ -399,6 +399,22 @@ export function changeList(draft, { tz, h24 }) {
 
 export const changes = (draft, opts) => changeList(draft, opts).map((c) => c.text);
 
+// A punch's technical details (spec §11): its id, the clock that recorded it, the login that wrote it, and when the
+// server received it, to the second.
+export function punchDetail(p, { tz, h24 = false }) {
+  const id = `punch ${p.id.slice(0, 8)}…`;
+  if (p.addedOnPage && p.dbLogin === null) return `${id} · new, written when you save`;
+  const parts = [id, `clock ${p.instanceId}`];
+  if (p.dbLogin !== null) parts.push(`written by ${p.dbLogin}`);
+  if (p.receivedAt !== null) {
+    const l = localParts(p.receivedAt, tz);
+    const s = String(l.second).padStart(2, "0");
+    const time = h24 ? `${clockTime(p.receivedAt, tz, true)}:${s}` : clockTime(p.receivedAt, tz, false).replace(" ", `:${s} `);
+    parts.push(`received ${MONTHS[l.month - 1].slice(0, 3)} ${l.day}, ${time}`);
+  }
+  return parts.join(" · ");
+}
+
 // The same, as the rows a save writes, for technical details (spec §11).
 export function writes(draft) {
   const utc = (ms) => `${new Date(ms).toISOString().replace("T", " ").slice(0, 19)} UTC`;

@@ -67,6 +67,7 @@ const SlotField = {
     readOnly: Boolean,
     working: Boolean,
     adding: Boolean, // a shift being added: every punch is new, so none is marked so
+    technical: Boolean,
   },
   emits: ["apply"],
   data: () => ({ bad: false }),
@@ -134,6 +135,7 @@ const SlotField = {
           <div :class="['field', 'field-small', { bad }]"><input :disabled="readOnly" placeholder="--:--" @change="keptAt" /></div>
         </div>
         <div class="small muted">The ones you don't keep are removed. Another time keeps a single {{ word }} at the time you type.</div>
+        <template v-if="technical"><div v-for="p in place.punches" :key="p.id" class="det">{{ D.punchDetail(p, { tz, h24 }) }}</div></template>
       </div>
       <div v-else-if="place.punches.length === 1" class="slot-one">
         <div class="row-tight">
@@ -152,6 +154,7 @@ const SlotField = {
           Added
           <button v-if="!readOnly" class="btn text" @click="$emit('apply', (d) => D.undo(d, place.punches[0].id))"><span class="page-icon icon-undo"></span>Undo</button>
         </div>
+        <div v-if="technical" class="det">{{ D.punchDetail(place.punches[0], { tz, h24 }) }}</div>
       </div>
       <div v-else :class="['field', 'missing', { bad }]">
         <input :disabled="readOnly" :placeholder="working ? 'Working' : 'Missing'" :aria-label="label" @change="added" />
@@ -530,15 +533,16 @@ export default {
               <h4>{{ v.entry.kind === "stray" ? "Stray punch" + (v.entry.punches.length > 1 ? "es" : "") : "Shift" }}</h4>
               <div class="row-slots">
                 <editor-slot label="Clock in" kind="clock_in" :place="v.sections.clockIn" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" @apply="apply" />
+                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :technical="options.technical" @apply="apply" />
                 <editor-slot label="Clock out" kind="clock_out" :place="v.sections.clockOut" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :working="v.entry.kind === 'shift' && v.entry.end === null" @apply="apply" />
+                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :technical="options.technical" :working="v.entry.kind === 'shift' && v.entry.end === null" @apply="apply" />
               </div>
               <div v-if="v.sections.others.length" class="others">
                 <div class="lab">Punches the hours ignore</div>
                 <div v-for="p in v.sections.others" :key="p.id" class="row-tight">
                   <span class="tagx">extra</span>{{ kindTime(p) }}
                   <punch-menu v-if="!readOnly" :punch="p" :tz="tz" :h24="h24" @apply="apply" />
+                  <span v-if="options.technical" class="det">{{ D.punchDetail(p, { tz, h24 }) }}</span>
                 </div>
               </div>
               <div v-if="v.shiftsThatDay.length && !readOnly" class="move-into">
@@ -552,10 +556,10 @@ export default {
               <div v-for="(pair, i) in v.sections[what === 'break' ? 'breaks' : 'lunches']" :key="i" class="pair">
                 <span class="lbl">{{ what === "break" ? "Break" : "Lunch" }}</span>
                 <editor-slot label="Start" :kind="what + '_start'" :place="pair.start" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" @apply="apply" />
+                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :technical="options.technical" @apply="apply" />
                 <span class="to">to</span>
                 <editor-slot label="End" :kind="what + '_end'" :place="pair.end" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" @apply="apply" />
+                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :technical="options.technical" @apply="apply" />
                 <span class="dur">{{ duration(pair) }}</span>
                 <q-btn v-if="!readOnly" flat round dense size="sm" class="del" aria-label="Remove" @click="removePair(pair)">
                   <span class="page-icon icon-delete"></span>
