@@ -27,7 +27,7 @@ The compose service `timeclock-web` runs the shift corrections page from the sam
 | `PAGE_SESSION_SECRET` | 64 random characters; signs the browser sessions |
 | `TIMECLOCK_WEB_PASSWORD` | 48 random characters; the `timeclock_web` login's password |
 
-All five are required: without them the compose refuses to deploy. Setup, once:
+All five are required by the page alone: it refuses to start without them, and the other services deploy regardless. Setup, once:
 
 1. In Coolify, give `timeclock-web` its domain on port 8080, and register that domain in Zoho's API console with the redirect URI `https://<domain>/auth/zoho`.
 2. Set the variables above, then deploy.

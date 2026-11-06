@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 STATIC_DIR: Final = Path(__file__).with_name("static")
-_PUBLIC_PATHS: Final = frozenset({"/signin", "/signin/zoho", "/auth/zoho"})
+_PUBLIC_PATHS: Final = frozenset({"/signin", "/signin/zoho", "/auth/zoho", "/favicon.ico"})  # the icon: the sign-in page's tab too
 _PUBLIC_PREFIXES: Final = ("/static/", "/_nicegui")  # the page's files and NiceGUI's (its assets and socket)
 # Activity in the browser, at most once a minute, so working in a page without loading another keeps the sign-in.
 _ACTIVITY_SCRIPT: Final = """<script>

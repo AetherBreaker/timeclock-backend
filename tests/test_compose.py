@@ -3,6 +3,7 @@
 # Standard library imports
 import ipaddress
 import os
+import re
 import socket
 import subprocess
 import time
@@ -132,3 +133,12 @@ def test_postgres_takes_the_page_login_only_from_the_page_network() -> None:
   finally:
     _docker("rm", "-f", container, check=False)
     _docker("network", "rm", network, check=False)
+
+
+def test_a_missing_page_variable_holds_back_only_the_page() -> None:
+  # `${X:?}` refuses the whole file, relay and backend included; the page refuses to start on its own without its secrets.
+  required = set(re.findall(r"\$\{(\w+):\?", "\n".join(SERVICES["timeclock-web"]["environment"])))
+  others = {
+    m for name, s in SERVICES.items() if name != "timeclock-web" for m in re.findall(r"\$\{(\w+)", "\n".join(s["environment"]))
+  }
+  assert required <= others

@@ -142,7 +142,7 @@ async def test_the_self_edit_block_holds_in_the_test_database(pages_db: PagesDb)
     conn.execute("UPDATE backend.editors SET developer = true WHERE email = %s", (pages_db.email,))
   gate, storage, session = _gate(pages_db), {}, {}
   gate.start(storage, session, pages_db.email)
-  gate.choose_database(pages_db.email, test=True)
+  await gate.choose_database(storage, session, test=True)
   own, other = pages_db.employees
   at = datetime.now(UTC) - timedelta(hours=1)
   with pytest.raises(psycopg.errors.InsufficientPrivilege, match="your own punches"):
@@ -161,7 +161,7 @@ async def test_a_transaction_refuses_a_database_the_page_did_not_draw(pages_db: 
     conn.execute("UPDATE backend.editors SET developer = true WHERE email = %s", (pages_db.email,))
   gate, storage, session = _gate(pages_db), {}, {}
   gate.start(storage, session, pages_db.email)
-  gate.choose_database(pages_db.email, test=True)  # another tab switches; this page still shows production
+  await gate.choose_database(storage, session, test=True)  # another tab switches; this page still shows production
   ran = False
   with pytest.raises(DatabaseChangedError):
     async with editor_transaction(pages_db.pools, gate, storage, session, test_database=False):
