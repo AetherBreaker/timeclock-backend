@@ -183,6 +183,7 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
   errors: dict[str, str] = {}  # the fields that can't be stored as typed
   message: tuple[str, str] | None = None  # (callout color, text) after a save
   clashing: set[str] = set()  # drafted fields someone else changed meanwhile, until a side is picked (spec §6.1)
+  typed_over: set[str] = set()  # fields mid-typing (failing their check) someone else changed: a pick once they parse
   outside: list[str] = []  # other fields someone else changed while there's a draft, which Save then confirms
   saving = False
   busy = asyncio.Lock()  # a save and a live update take turns, so neither lands over the other's newer read
@@ -210,7 +211,9 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
           draft.pop(field)
         else:
           clashing.add(field)
-      elif field not in errors:  # one being typed keeps what's typed
+      elif field in errors:  # one being typed keeps what's typed
+        typed_over.add(field)
+      else:
         if draft and field not in outside:
           outside.append(field)
         widgets[field].set_value(_shown(field, row[field]))  # equal to the base now, so it drafts nothing
@@ -251,6 +254,9 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
         draft.pop(field, None)
       else:
         draft[field] = value
+        if field in typed_over:
+          clashing.add(field)
+      typed_over.discard(field)
     message = None
     redraw()
 

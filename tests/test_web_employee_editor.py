@@ -197,6 +197,21 @@ async def test_an_outside_change_to_a_drafted_field_asks_whose_to_keep(db_page: 
   assert _row(db_page, bob, "phone", "email") == ("+15555550142", "theirs@example.com")
 
 
+async def test_an_outside_change_to_a_field_being_typed_asks_whose_to_keep(db_page: DbPage) -> None:
+  # Half a phone fails its check until the tenth digit; someone else's save meanwhile is still a pick once it's whole.
+  bob = db_page.db.employees[1]
+  await db_page.user.open(f"/employee?id={bob}")
+  db_page.user.find(marker="field-phone").type("555-555")
+  await db_page.user.should_see(text.PHONE_INVALID)
+  with db_page.db.admin() as conn:
+    conn.execute("UPDATE employees SET phone = '+15555550199' WHERE id = %s", (bob,))
+  await db_page.user.should_see(marker="history-line", content="Phone: empty to (555) 555-0199", retries=50)
+  assert _widget(db_page, "field-phone").value == "555-555"  # what's typed stays
+  db_page.user.find(marker="field-phone").type("-0142")
+  await db_page.user.should_see(marker="theirs-phone")
+  await db_page.user.should_see("Pick theirs or yours for each field marked in red to save.")
+
+
 async def test_an_outside_change_elsewhere_asks_to_confirm_the_save(db_page: DbPage) -> None:
   bob = db_page.db.employees[1]
   await db_page.user.open(f"/employee?id={bob}")
