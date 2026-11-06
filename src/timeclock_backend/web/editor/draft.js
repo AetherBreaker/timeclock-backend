@@ -234,26 +234,36 @@ export function sections(draft, entry) {
 
 const slotsOf = (found) => [found.clockIn, found.clockOut, ...[...found.breaks, ...found.lunches].flatMap((p) => [p.start, p.end])];
 
-// A join (an after shift holding punches of several before shifts) or a split (a before shift's punches across several
-// after shifts), which the editor confirms before applying (spec §6.7). Strays don't count: keeping one joins nothing.
-// A shift being added joins and splits nothing: an overlap is refused instead.
-export function joinSplit(before, after) {
-  if (adding(after)) return null;
-  const shiftsOf = (draft) => entries(punches(draft), ALL).filter((e) => e.kind === "shift");
+// The joins (a shift holding punches of several saved shifts) and splits (a saved shift's punches across several shifts)
+// a draft makes, keyed so the same reshaping keys alike. Against the saved punches, not the previous step: a change made
+// in two steps (a lunch start to a clock-out, then its end to a clock-in) splits only at the second, from strays. Strays
+// don't count: keeping one joins nothing.
+function reshapes(draft) {
   const where = (list) => new Map(list.flatMap((e, i) => e.punches.map((p) => [p.id, i])));
-  const was = shiftsOf(before);
-  const now = shiftsOf(after);
+  const was = entries(draft.base.punches, ALL).filter((e) => e.kind === "shift");
+  const now = entries(punches(draft), ALL).filter((e) => e.kind === "shift");
   const wasAt = where(was);
   const nowAt = where(now);
-  const keys = new Set(shown(after).map((e) => e.key));
+  const keys = new Set(shown(draft).map((e) => e.key));
+  const found = new Map();
   for (const e of now) {
-    const from = new Set(e.punches.filter((p) => wasAt.has(p.id)).map((p) => wasAt.get(p.id)));
-    if (from.size > 1 && keys.has(e.key)) return { kind: "join", entries: [e] };
+    const from = [...new Set(e.punches.filter((p) => wasAt.has(p.id)).map((p) => wasAt.get(p.id)))].sort((a, b) => a - b);
+    if (from.length > 1 && keys.has(e.key)) found.set(`join:${from}`, { kind: "join", entries: [e] });
   }
-  for (const e of was) {
+  was.forEach((e, i) => {
     const to = [...new Set(e.punches.filter((p) => nowAt.has(p.id)).map((p) => nowAt.get(p.id)))].sort((a, b) => a - b);
-    if (to.length > 1) return { kind: "split", entries: to.map((i) => now[i]) };
-  }
+    if (to.length > 1) found.set(`split:${i}:${to.length}`, { kind: "split", entries: to.map((j) => now[j]) });
+  });
+  return found;
+}
+
+// A join or a split `after` makes that `before` didn't, which the editor confirms before applying (spec §6.7); once
+// confirmed, later edits to the same shape don't ask again. A shift being added joins and splits nothing: an overlap is
+// refused instead.
+export function joinSplit(before, after) {
+  if (adding(after)) return null;
+  const known = reshapes(before);
+  for (const [key, change] of reshapes(after)) if (!known.has(key)) return change;
   return null;
 }
 

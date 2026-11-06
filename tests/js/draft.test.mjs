@@ -203,6 +203,26 @@ test("a forgotten clock-out added splits a shift; moving it after is neither", (
   assert.equal(d.joinSplit(after, d.setTime(after, id(9), at(2, "15:35"))), null);
 });
 
+test("a lunch turned into a clock-out and a clock-in asks once, at the step that splits", () => {
+  const punches = [
+    punch(1, "clock_in", 3, "07:00"),
+    punch(2, "lunch_start", 3, "11:00"),
+    punch(3, "lunch_end", 3, "11:30"),
+    punch(4, "clock_out", 3, "15:30"),
+  ];
+  const before = d.newDraft(base(punches));
+  const half = d.setKind(before, id(2), "clock_out"); // the rest are strays for now: nothing split yet
+  assert.equal(d.joinSplit(before, half), null);
+  const after = d.setKind(half, id(3), "clock_in");
+  const found = d.joinSplit(half, after);
+  assert.equal(found.kind, "split");
+  assert.deepEqual(
+    found.entries.map((e) => e.key),
+    [id(1), id(3)],
+  );
+  assert.equal(d.joinSplit(after, d.setTime(after, id(4), at(3, "15:45"))), null); // confirmed: later edits don't ask again
+});
+
 test("a punch someone else changed meanwhile is a conflict until a side is picked", () => {
   const b = base(doubleIn);
   const draft = d.setTime(d.newDraft(b), id(3), at(3, "15:45"));
