@@ -414,6 +414,8 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
   opened_ids = [] if entry is None else [p.id for p in entry.punches]  # in punch order, as the base sends them
   focus = set(opened_ids)
   database = "test" if signin.test_database else "production"
+  stored_as = f"timeclock-draft:{signin.email}:{database}:{employee}:"
+  key = None if entry is None else entry.key  # the address's punch, and the stored draft's name
   with body:
     if entry is not None:
       crumb(week[0].astimezone(tz).date())
@@ -441,15 +443,15 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
         "h24": h24,
         "technical": technical,
         "contact": settings.fault_contact,
-        "storageKey": f"timeclock-draft:{signin.email}:{database}:{employee}:{f'new:{day}' if entry is None else entry.key}",
+        "storageKey": f"{stored_as}{f'new:{day}' if key is None else key}",
         "add": add,
         "back": f"/?{urlencode({'week': week[0].astimezone(tz).date().isoformat()})}",
       },
     )
   token = editor.props["base"]["token"]
 
-  async def save(e: GenericEventArguments) -> None:  # noqa: C901 - one save's answers, then what each redraws
-    nonlocal token
+  async def save(e: GenericEventArguments) -> None:  # noqa: C901, PLR0912 - one save's answers, then what each redraws
+    nonlocal token, key
     payload = e.args if isinstance(e.args, dict) else e.args[0]
     result: dict[str, Any]
     fresh: list[PagePunch] = []
@@ -479,14 +481,23 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
       token = result["base"]["token"]
     elif "changed" in result:
       token = result["changed"]["token"]
+    shown = None if entry is None or "ok" not in result else _entry_holding(fresh, focus, as_of=now())
+    # A save that removed the shift's first punch (keeping the second of a double clock-in) renames it: the address and
+    # the stored draft move to its new first punch, so a reload still opens it.
+    moved = shown is not None and shown.key != key
+    if shown is not None and moved:
+      key = shown.key
+      result["storageKey"] = f"{stored_as}{key}"
     editor.send_result(result)  # first: on ok it drops the browser's stored draft
     if "ok" not in result:
       return
     if entry is None:  # an added shift opens as any other
       if (added := _entry_holding(fresh, {UUID(d["id"]) for d in payload["draft"] if d["new"]}, as_of=now())) is not None:
         ui.navigate.to(f"/shift?{urlencode({'employee': person.id, 'punch': added.punches[0].id})}")
-    elif (shown := _entry_holding(fresh, focus, as_of=now())) is not None:
+    elif shown is not None:
       chips.refresh(shown)
+      if moved:
+        ui.navigate.history.replace(f"/shift?{urlencode({'employee': person.id, 'punch': key})}")
 
   editor.on("save", save)
 

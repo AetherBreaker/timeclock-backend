@@ -179,6 +179,7 @@ export default {
       message: null, // {color, text, open}
       dialog: null, // {kind: "join" | "split" | "outside" | "fault", ...}
       shownHistory: this.history, // the prop, or a save's answer since
+      storageKey: this.options.storageKey, // or the one a save's answer moves it to
     };
   },
   computed: {
@@ -288,7 +289,7 @@ export default {
   created() {
     let stored = null;
     try {
-      stored = localStorage.getItem(this.options.storageKey);
+      stored = localStorage.getItem(this.storageKey);
     } catch {
       stored = null;
     }
@@ -432,6 +433,7 @@ export default {
         this.message = { color: "green", text: "Saved." };
         this.shownHistory = result.history;
         this.forget();
+        if (result.storageKey) this.storageKey = result.storageKey; // after forget(): the old key is dropped
       } else if (result.changed) this.rebaseOnto(result.changed, true);
       else if (result.refused) this.message = { color: "red", text: result.refused, open: result.open ?? null };
       else if (result.fault) this.dialog = { kind: "fault", ...result.fault };
@@ -449,19 +451,19 @@ export default {
       if (this.options.add) window.location.assign(this.options.back);
     },
     store() {
-      if (this.readOnly || !this.options.storageKey) return;
+      if (this.readOnly || !this.storageKey) return;
       try {
         const d = this.draft;
         if (d.edits.size > 0 || d.moved.size > 0 || this.note) {
-          localStorage.setItem(this.options.storageKey, D.serialize(d, { note: this.note, token: d.base.token }));
-        } else localStorage.removeItem(this.options.storageKey);
+          localStorage.setItem(this.storageKey, D.serialize(d, { note: this.note, token: d.base.token }));
+        } else localStorage.removeItem(this.storageKey);
       } catch {
         // storage full or blocked: the draft still lives in this page
       }
     },
     forget() {
       try {
-        localStorage.removeItem(this.options.storageKey);
+        localStorage.removeItem(this.storageKey);
       } catch {
         // as store()
       }

@@ -371,3 +371,24 @@ async def test_an_added_open_shift_with_punches_after_it_needs_its_clock_out(pag
   pages_db.punch(bob, "clock_out", _ny(5, "08:45"))
   earlier = [_edit(uuid4(), kind="clock_in", at=_ny(5, "07:00"), new=True)]
   assert await _save(pages_db, bob, earlier, focus=[]) == {"refused": text.ADD_CLOCK_OUT, "open": None}
+
+
+async def test_a_save_that_removes_the_shifts_first_punch_moves_the_address(db_page: DbPage, monkeypatch: pytest.MonkeyPatch) -> None:
+  # The usual double clock-in fix: keeping the second removes the punch the address and the stored draft are named for.
+  bob = db_page.db.employees[1]
+  first = db_page.db.punch(bob, "clock_in", _ny(3, "07:01"))
+  second = db_page.db.punch(bob, "clock_in", _ny(3, "07:04"))
+  out = db_page.db.punch(bob, "clock_out", _ny(3, "15:33"))
+  await db_page.user.open(f"/shift?employee={bob}&punch={first}")
+  await db_page.user.should_see(kind=ShiftEditor)
+  editor, answered, answers, addresses = _editor(db_page), asyncio.Event(), [], []
+  monkeypatch.setattr(editor, "run_method", lambda _, result: (answers.append(result), answered.set()))
+  monkeypatch.setattr(ui.navigate.history, "replace", addresses.append)
+  key = editor.props["options"]["storageKey"]
+  [listener] = [key for key, found in editor._event_listeners.items() if found.type == "save"]  # pyright: ignore[reportPrivateUsage]
+  draft = [_edit(first, removed=True, kind="clock_in", at=_ny(3, "07:01"))]
+  payload = await _payload(db_page.db, bob, draft, focus=[str(first), str(second), str(out)])
+  editor._handle_event({"listener_id": listener, "args": payload})  # pyright: ignore[reportPrivateUsage]
+  await asyncio.wait_for(answered.wait(), 10)
+  assert answers[0]["storageKey"] == key.removesuffix(str(first)) + str(second)
+  assert addresses == [f"/shift?employee={bob}&punch={second}"]
