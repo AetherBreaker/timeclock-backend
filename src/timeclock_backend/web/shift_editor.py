@@ -7,7 +7,7 @@ in Python decide, and their numbers are the ones written (§6.9).
 
 # Standard library imports
 import logging
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlencode
 from uuid import UUID
@@ -32,6 +32,7 @@ from .rules import (
   entries,
   entry_hours,
   flags,
+  overlapping,
   problem,
   records,
   refusal,
@@ -42,8 +43,7 @@ from .store import load_context, load_history, load_punches, lock_employee, punc
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import Callable, Iterable, Mapping, Sequence
-  from datetime import date
+  from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
   from zoneinfo import ZoneInfo
 
   # Third party imports
@@ -212,7 +212,7 @@ def _refused(found: Refusal, after: Sequence[PagePunch], tz: ZoneInfo, *, h24: b
   return f"Saving this would make the hours ignore another punch: {listed}. Change it so it still counts."
 
 
-async def save_shift(  # noqa: PLR0911 - one save's checks in the order they refuse; each return is an answer
+async def save_shift(  # noqa: C901, PLR0911 - one save's checks in the order they refuse; each return is an answer
   conn: AsyncConnection[DictRow],
   *,
   signin: SignIn,
@@ -253,6 +253,16 @@ async def save_shift(  # noqa: PLR0911 - one save's checks in the order they ref
   sent = _moment(int(payload["asOf"]))
   as_of = sent if sent is not None and abs(sent - now) <= AS_OF_SLACK else now
   touched = set(focus) | {d.id for d in draft}
+  if not focus:  # adding a shift (§6.13): one meeting a shift the employee has is refused, with a link to that shift
+    new = {d.id for d in draft if d.new}
+    added = [p for p in after if p.id in new]
+    if added and (met := overlapping(punches, added[0].at, added[-1].at, as_of=as_of)) is not None:
+      when = f"{text.long_day(met.start.astimezone(ctx.tz).date(), year=False)}, from {text.clock_time(met.start, ctx.tz, h24=h24)}"
+      end = "now" if met.end is None else text.clock_time(met.end, ctx.tz, h24=h24)
+      return {
+        "refused": f"This overlaps {person.first_name}'s shift on {when} to {end}. Change the times, or open that shift instead.",
+        "open": f"/shift?{urlencode({'employee': employee_id, 'punch': met.punches[0].id})}",
+      }
   if (refused := refusal(punches, after, touched, as_of=as_of)) is not None:
     return {"refused": _refused(refused, after, ctx.tz, h24=h24), "open": None}
   if not payload.get("acceptServer"):
@@ -282,11 +292,11 @@ async def save_shift(  # noqa: PLR0911 - one save's checks in the order they ref
   return {"ok": True, "base": base(saved)}
 
 
-def _entry_holding(punches: Sequence[PagePunch], punch_id: UUID, *, as_of: datetime) -> Entry | None:
-  return next((e for e in entries(punches, as_of=as_of) if any(p.id == punch_id for p in e.punches)), None)
+def _entry_holding(punches: Sequence[PagePunch], ids: Collection[UUID], *, as_of: datetime) -> Entry | None:
+  return next((e for e in entries(punches, as_of=as_of) if any(p.id in ids for p in e.punches)), None)
 
 
-async def draw_shift_editor(  # noqa: C901, PLR0915 - one page: its read, its title, its component and its save
+async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two modes: its read, title, component and save
   signin: SignIn,
   *,
   settings: PageSettings,
@@ -295,16 +305,22 @@ async def draw_shift_editor(  # noqa: C901, PLR0915 - one page: its read, its ti
   live: Live,
   now: Callable[[], datetime],
   query: Mapping[str, str],
+  add: bool = False,
 ) -> None:
-  """Draw `/shift?employee=<id>&punch=<id>`: the entry holding that punch, in the window from its week on."""
+  """Draw `/shift?employee=<id>&punch=<id>`: the entry holding that punch, in the window from its week on.
+
+  With `add`, `/shift/new?employee=<id>&date=<YYYY-MM-DD>` (§6.13): pickers for both, each choice a page load, then the
+  editor empty over that day's week. A saved shift then opens as any other.
+  """
   storage, session, client = app.storage.user, app.storage.browser, context.client
   chosen = prefs()
   h24, technical = chosen["h24"], chosen["technical"]
   employee = int(v) if (v := query.get("employee", "")).isdigit() else None
   try:
-    punch_id = UUID(query.get("punch", ""))
+    punch_id = None if add else UUID(query.get("punch", ""))
+    day = date.fromisoformat(query["date"]) if add and query.get("date") else None
   except ValueError:
-    punch_id = None
+    punch_id = day = None
   body = ui.column().classes("page-body shift-editor")
 
   def crumb(week_start: date | None) -> None:
@@ -320,20 +336,29 @@ async def draw_shift_editor(  # noqa: C901, PLR0915 - one page: its read, its ti
         ui.element("span").classes("page-icon icon-info")
         ui.label("This shift has changed since the list was drawn.")
 
-  if employee is None or punch_id is None:
+  if not add and (employee is None or punch_id is None):
     gone(None)
     return
   try:
     async with editor_transaction(pools, gate, storage, session, test_database=signin.test_database, touch=False) as conn:
       ctx = await load_context(conn, default_tz=settings.tz)
-      at = await punch_time(conn, employee_id=employee, punch_id=punch_id)
-      week = None if at is None else week_bounds(at, ctx.tz)
-      punches = [] if week is None else (await load_punches(conn, start=week[0], end=None, employee_id=employee)).get(employee, [])
       opened = now()
-      entry = _entry_holding(punches, punch_id, as_of=opened)
+      if add:  # your own shifts aren't yours to add (§6.12), so you aren't offered
+        chose = employee is not None and employee != signin.employee_id
+        week = week_bounds(datetime.combine(day, time(12), tzinfo=ctx.tz), ctx.tz) if chose and day is not None else None
+      else:
+        assert employee is not None and punch_id is not None
+        at = await punch_time(conn, employee_id=employee, punch_id=punch_id)
+        week = None if at is None else week_bounds(at, ctx.tz)
+      punches = (
+        []
+        if week is None or employee is None
+        else (await load_punches(conn, start=week[0], end=None, employee_id=employee)).get(employee, [])
+      )
+      entry = None if punch_id is None else _entry_holding(punches, {punch_id}, as_of=opened)
       span: tuple[datetime, datetime] | None = None
       history: list[HistoryItem] = []
-      if entry is not None:
+      if entry is not None and employee is not None:
         first, last = entry.start.astimezone(ctx.tz).date(), (entry.end or opened).astimezone(ctx.tz).date()
         span = (datetime.combine(first, time(0), tzinfo=ctx.tz), datetime.combine(last + timedelta(days=1), time(0), tzinfo=ctx.tz))
         history = await load_history(conn, employee_id=employee, start=span[0], end=span[1])
@@ -350,50 +375,74 @@ async def draw_shift_editor(  # noqa: C901, PLR0915 - one page: its read, its ti
       ui.label(text.DB_DOWN)
     return
 
-  person = ctx.people.get(employee)
-  if entry is None or person is None or week is None or span is None:
-    gone(None if week is None else week[0].astimezone(ctx.tz).date())
+  tz = ctx.tz
+  person = None if employee is None else ctx.people.get(employee)
+  if add:
+    with body:
+      crumb(None if week is None else week[0].astimezone(tz).date())
+      ui.label("Add a shift").classes("title-name")
+      others = {
+        p.id: f"{p.name} · ID {p.username}"
+        for p in sorted(ctx.people.values(), key=lambda p: p.sort_key)
+        if p.id != signin.employee_id
+      }
+
+      def pick(**changed: object) -> None:
+        wanted = {"employee": employee, "date": None if day is None else day.isoformat()} | changed
+        ui.navigate.to(f"/shift/new?{urlencode({k: v for k, v in wanted.items() if v is not None})}")
+
+      with ui.row().classes("ctl"):
+        ui.select(
+          others, value=employee if employee in others else None, label="Employee", on_change=lambda e: pick(employee=e.value)
+        ).props("outlined dense options-dense").classes("filter wide").mark("add-employee")
+        # The browser's own date field: its value is empty until a whole date is in it.
+        ui.input("Date", value="" if day is None else day.isoformat(), on_change=lambda e: e.value and pick(date=e.value)).props(
+          "type=date outlined dense stack-label"
+        ).classes("filter").mark("add-date")
+    if week is None or person is None or day is None:
+      return
+  elif entry is None or person is None or week is None or span is None:
+    gone(None if week is None else week[0].astimezone(tz).date())
     return
 
-  tz = ctx.tz
   own = employee == signin.employee_id
-  day = entry.start.astimezone(tz).date()
+  focus = set() if entry is None else {p.id for p in entry.punches}
+  database = "test" if signin.test_database else "production"
   with body:
-    crumb(week[0].astimezone(tz).date())
-    with ui.row().classes("title"):
-      ui.label(person.name).classes("title-name")
-      ui.label(f"ID {person.username}").classes("eid")
-      ui.label(text.long_day(day)).classes("title-day")
+    if entry is not None:
+      crumb(week[0].astimezone(tz).date())
+      with ui.row().classes("title"):
+        ui.label(person.name).classes("title-name")
+        ui.label(f"ID {person.username}").classes("eid")
+        ui.label(text.long_day(entry.start.astimezone(tz).date())).classes("title-day")
 
-      @ui.refreshable
-      def chips(shown: Entry) -> None:
-        for flag in flags(shown):
-          ui.label(text.flag_label(flag, problem(shown), len(shown.ignored))).classes(f"chip {text.CHIP[flag]}")
+        @ui.refreshable
+        def chips(shown: Entry) -> None:
+          for flag in flags(shown):
+            ui.label(text.flag_label(flag, problem(shown), len(shown.ignored))).classes(f"chip {text.CHIP[flag]}")
 
-      chips(entry)
+        chips(entry)
     if technical:
       ui.label(text.employee_details(person, ctx.groups, tz, h24=h24)).classes("empdet")
     if own:
       with ui.row().classes("callout grey"):
         ui.element("span").classes("page-icon icon-lock")
         ui.label(text.OWN_SHIFT)
-    database = "test" if signin.test_database else "production"
     editor = ShiftEditor(
-      base=base_json(ctx, person, own=own, punches=punches, focus=[p.id for p in entry.punches], week=week, now=opened),
+      base=base_json(ctx, person, own=own, punches=punches, focus=focus, week=week, now=opened, day=day),
       history=history_json(history, tz, h24=h24),
       options={
         "h24": h24,
         "technical": technical,
         "contact": settings.fault_contact,
-        "storageKey": f"timeclock-draft:{signin.email}:{database}:{employee}:{entry.key}",
-        "add": False,
+        "storageKey": f"timeclock-draft:{signin.email}:{database}:{employee}:{f'new:{day}' if entry is None else entry.key}",
+        "add": add,
         "back": f"/?{urlencode({'week': week[0].astimezone(tz).date().isoformat()})}",
       },
     )
   token = editor.props["base"]["token"]
-  focus = {p.id for p in entry.punches}
 
-  async def save(e: GenericEventArguments) -> None:
+  async def save(e: GenericEventArguments) -> None:  # noqa: C901 - one save's answers, then what each redraws
     nonlocal token
     payload = e.args if isinstance(e.args, dict) else e.args[0]
     result: dict[str, Any]
@@ -401,11 +450,11 @@ async def draw_shift_editor(  # noqa: C901, PLR0915 - one page: its read, its ti
     try:
       async with editor_transaction(pools, gate, storage, session, test_database=signin.test_database) as conn:
         result = await save_shift(
-          conn, signin=signin, employee_id=employee, week=week, payload=payload, now=now(), settings=settings, h24=h24
+          conn, signin=signin, employee_id=person.id, week=week, payload=payload, now=now(), settings=settings, h24=h24
         )
         if "ok" in result:  # read in the save's transaction, so they hold the save
-          fresh = (await load_punches(conn, start=week[0], end=None, employee_id=employee)).get(employee, [])
-          items = await load_history(conn, employee_id=employee, start=span[0], end=span[1])
+          fresh = (await load_punches(conn, start=week[0], end=None, employee_id=person.id)).get(person.id, [])
+          items = [] if span is None else await load_history(conn, employee_id=person.id, start=span[0], end=span[1])
           result["history"] = history_json(items, tz, h24=h24)
     except SignedOutError:
       result = {"signedOut": True}
@@ -422,11 +471,16 @@ async def draw_shift_editor(  # noqa: C901, PLR0915 - one page: its read, its ti
       raise
     if "ok" in result:
       token = result["base"]["token"]
-      if (held := next((e for e in entries(fresh, as_of=now()) if focus & {p.id for p in e.punches}), None)) is not None:
-        chips.refresh(held)
     elif "changed" in result:
       token = result["changed"]["token"]
-    editor.send_result(result)
+    editor.send_result(result)  # first: on ok it drops the browser's stored draft
+    if "ok" not in result:
+      return
+    if entry is None:  # an added shift opens as any other
+      if (added := _entry_holding(fresh, {UUID(d["id"]) for d in payload["draft"] if d["new"]}, as_of=now())) is not None:
+        ui.navigate.to(f"/shift?{urlencode({'employee': person.id, 'punch': added.punches[0].id})}")
+    elif (shown := _entry_holding(fresh, focus, as_of=now())) is not None:
+      chips.refresh(shown)
 
   editor.on("save", save)
 
@@ -434,10 +488,10 @@ async def draw_shift_editor(  # noqa: C901, PLR0915 - one page: its read, its ti
     nonlocal token
     try:
       async with editor_transaction(pools, gate, storage, session, test_database=signin.test_database, touch=False) as conn:
-        fresh = (await load_punches(conn, start=week[0], end=None, employee_id=employee)).get(employee, [])
+        fresh = (await load_punches(conn, start=week[0], end=None, employee_id=person.id)).get(person.id, [])
         if window_token(fresh) == token:
           return
-        items = await load_history(conn, employee_id=employee, start=span[0], end=span[1])
+        items = [] if span is None else await load_history(conn, employee_id=person.id, start=span[0], end=span[1])
     except SignedOutError:
       with client:
         ui.navigate.to("/signin")
@@ -452,9 +506,9 @@ async def draw_shift_editor(  # noqa: C901, PLR0915 - one page: its read, its ti
     token = window_token(fresh)
     with client:
       editor.set_base(
-        base_json(ctx, person, own=own, punches=fresh, focus=list(focus), week=week, now=now()), history_json(items, tz, h24=h24)
+        base_json(ctx, person, own=own, punches=fresh, focus=focus, week=week, now=now(), day=day), history_json(items, tz, h24=h24)
       )
-      if (held := next((e for e in entries(fresh, as_of=now()) if focus & {p.id for p in e.punches}), None)) is not None:
-        chips.refresh(held)
+      if entry is not None and (shown := _entry_holding(fresh, focus, as_of=now())) is not None:
+        chips.refresh(shown)
 
   client.on_delete(live.subscribe(test=signin.test_database, callback=woken))

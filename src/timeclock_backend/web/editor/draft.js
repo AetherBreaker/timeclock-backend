@@ -8,7 +8,9 @@
 //
 // Shifts are worked out over every punch, later than now or not (`ALL`): a time typed past now stays where it was put.
 // The hours count up to now, as the server's do.
-import { PAGE_INSTANCE_ID, PENDING, clockTime, entries, localDate, localParts, order, records, refusal, zonedTime } from "./rules.js";
+//
+// Adding a shift (spec §6.13), the base has a `day` and nothing opened; the new shift is the added punches alone.
+import { PAGE_INSTANCE_ID, PENDING, clockTime, entries, localDate, localParts, order, overlapping, records, refusal, zonedTime } from "./rules.js";
 
 const ALL = Infinity;
 const LABEL = {
@@ -39,6 +41,14 @@ const byId = (draft) => new Map(draft.base.punches.map((p) => [p.id, p]));
 const capital = (s) => s[0].toUpperCase() + s.slice(1);
 const article = (word) => `${/^[aeiou]/.test(word) ? "an" : "a"} ${word}`;
 const listed = (items) => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`);
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const adding = (draft) => draft.base.day !== null;
+const fresh = (draft) => punches(draft).filter((p) => draft.edits.get(p.id)?.new);
+// "Monday, November 2", the local day of `ms`.
+const dayName = (ms, tz) => {
+  const [y, m, d] = localDate(ms, tz).split("-").map(Number);
+  return `${DAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}, ${MONTHS[m - 1]} ${d}`;
+};
 
 export function newDraft(base, { focus = base.focus, moved = [] } = {}) {
   return { base, edits: new Map(), focus: new Set(focus), moved: new Map(moved), resolved: new Map() };
@@ -125,8 +135,21 @@ export function punches(draft) {
 
 const touched = (draft) => new Set([...draft.focus, ...draft.edits.keys()]);
 
+// The shift being added: its punches' one shift once they make one; until then a "new" entry, its punches slotted by
+// kind, with the base's day to place a typed time on, and red only once there's a clock-in to be wrong about. The base's
+// punches stay out, so an overlap shows as one (`overlap`) rather than merging into the shift it meets.
+export function newShift(draft) {
+  const added = fresh(draft);
+  const found = entries(added, ALL);
+  if (found.length === 1 && found[0].kind === "shift") return found[0];
+  const wrong = found.flatMap((e) => (e.kind === "stray" ? e.punches.map((p) => p.id) : [...e.ignored]));
+  const ignored = new Set(added.some((p) => p.kind === "clock_in") ? wrong : []);
+  return { kind: "new", key: "new", start: added[0]?.at ?? null, end: null, punches: added, ignored, shift: null, clockOut: null, day: draft.base.day };
+}
+
 // The entries the editor shows: those holding an opened or touched punch, and the strays moved into one of them.
 export function shown(draft) {
+  if (adding(draft)) return [newShift(draft)];
   const all = entries(punches(draft), ALL);
   const ids = touched(draft);
   const picked = all.filter((e) => e.punches.some((p) => ids.has(p.id)));
@@ -159,7 +182,7 @@ export function sections(draft, entry) {
     }
   };
   const all = entries(punches(draft), ALL);
-  if (entry.kind === "stray") placeRun(entry.punches);
+  if (entry.kind !== "shift") placeRun(entry.punches);
   else {
     let open = null; // the break or lunch under way: {kind, pair}
     let closed = null; // the one the last punch ended
@@ -188,7 +211,7 @@ export function sections(draft, entry) {
     }
     const day = localDate(entry.start, draft.base.tz);
     for (const e of all) {
-      if (e.kind !== "stray") continue;
+      if (e.kind !== "stray" || adding(draft)) continue; // a shift being added takes in no stray
       if (draft.moved.get(e.key) === entry.key) placeRun(e.punches);
       else if (!draft.moved.has(e.key) && localDate(e.start, draft.base.tz) === day) found.strays.push(e);
     }
@@ -213,7 +236,9 @@ const slotsOf = (found) => [found.clockIn, found.clockOut, ...[...found.breaks, 
 
 // A join (an after shift holding punches of several before shifts) or a split (a before shift's punches across several
 // after shifts), which the editor confirms before applying (spec §6.7). Strays don't count: keeping one joins nothing.
+// A shift being added joins and splits nothing: an overlap is refused instead.
 export function joinSplit(before, after) {
+  if (adding(after)) return null;
   const shiftsOf = (draft) => entries(punches(draft), ALL).filter((e) => e.kind === "shift");
   const where = (list) => new Map(list.flatMap((e, i) => e.punches.map((p) => [p.id, i])));
   const was = shiftsOf(before);
@@ -324,7 +349,9 @@ export function blockers(draft, { connected = true, readOnly = false } = {}) {
     for (const s of slotsOf(sections(draft, e))) if (s.punches.length > 1) choices.add(s.punches[0].kind);
   }
   for (const kind of KINDS) if (choices.has(kind)) found.push(`Choose which ${WORD[kind]} to keep to save.`);
-  if (choices.size === 0 && refused(draft) !== null) found.push("Fix the punches marked in red to save.");
+  if (adding(draft) && !fresh(draft).some((p) => p.kind === "clock_in")) found.push("Add a clock-in to save.");
+  else if (overlap(draft) !== null) found.push("Change the times so it doesn't overlap that shift.");
+  else if (choices.size === 0 && refused(draft) !== null) found.push("Fix the punches marked in red to save.");
   if (found.length === 0 && recordsOf(draft).length === 0) found.push("Nothing to save yet.");
   if (!connected) found.push(OFFLINE);
   return found;
@@ -333,6 +360,17 @@ export function blockers(draft, { connected = true, readOnly = false } = {}) {
 // "Your changes" (spec §8), by where each punch was: [{id, text}], the id the one Undo puts back.
 export function changeList(draft, { tz, h24 }) {
   const time = (ms) => clockTime(ms, tz, h24);
+  if (adding(draft)) {
+    // One line for the shift being added (mockup F), which Cancel takes back whole.
+    const added = fresh(draft);
+    if (added.length === 0) return [];
+    const at = (kind) => added.find((p) => p.kind === kind)?.at;
+    const start = at("clock_in") === undefined ? "no clock-in" : time(at("clock_in"));
+    const end = at("clock_out") === undefined ? ", no clock-out" : ` to ${time(at("clock_out"))}`;
+    const count = (what) => added.filter((p) => p.kind === `${what}_start`).length;
+    const pairs = [count("break") && plural(count("break"), "break"), count("lunch") && plural(count("lunch"), "lunch", "lunches")].filter(Boolean);
+    return [{ id: null, text: `New shift: ${start}${end}${pairs.length ? `, with ${listed(pairs)}` : ""}` }];
+  }
   const current = byId(draft);
   const lines = [];
   for (const [id, e] of draft.edits) {
@@ -364,19 +402,30 @@ export function writes(draft) {
   });
 }
 
-// The "Needs fixing" banner (spec §8), or null when the entry holds no problem.
 // "Monday, November 2, 8:00 AM to 4:30 PM"; the end names its day when it's another one.
 export function span(entry, { tz, h24 }) {
   const time = (ms) => clockTime(ms, tz, h24);
-  const day = (ms) => {
-    const [y, m, d] = localDate(ms, tz).split("-").map(Number);
-    return `${DAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}, ${MONTHS[m - 1]} ${d}`;
-  };
-  const start = `${day(entry.start)}, ${time(entry.start)}`;
+  const start = `${dayName(entry.start, tz)}, ${time(entry.start)}`;
   if (entry.end === null) return `${start} to working`;
-  return `${start} to ${localDate(entry.end, tz) === localDate(entry.start, tz) ? "" : `${day(entry.end)}, `}${time(entry.end)}`;
+  return `${start} to ${localDate(entry.end, tz) === localDate(entry.start, tz) ? "" : `${dayName(entry.end, tz)}, `}${time(entry.end)}`;
 }
 
+// The shift of the employee's that a shift being added meets (spec §6.13): what to say, and where to open it; or null.
+export function overlap(draft, { h24 = false } = {}) {
+  const added = adding(draft) ? fresh(draft) : [];
+  if (added.length === 0) return null;
+  const found = overlapping(draft.base.punches, added[0].at, added[added.length - 1].at, ALL);
+  if (found === null) return null;
+  const { tz, employee } = draft.base;
+  const time = (ms) => clockTime(ms, tz, h24);
+  const end = found.end === null ? "now" : time(found.end);
+  return {
+    text: `This overlaps ${employee.first}'s shift on ${dayName(found.start, tz)}, from ${time(found.start)} to ${end}. Change the times, or open that shift instead.`,
+    open: `/shift?employee=${employee.id}&punch=${found.punches[0].id}`,
+  };
+}
+
+// The "Needs fixing" banner (spec §8), or null when the entry holds no problem.
 export function banner(entry, { tz, h24 }) {
   const time = (ms) => clockTime(ms, tz, h24);
   if (entry.kind === "stray") {
@@ -414,13 +463,13 @@ export function parseTime(text) {
 }
 
 // The instant a typed time names for a slot (spec §8): a clock-in on the entry's day; anything else on the clock-in's
-// day, or the next day when it's earlier in the day than the clock-in.
+// day, or the next day when it's earlier in the day than the clock-in. An empty new shift places it on its own day.
 export function placeTime(entry, slotKind, { h, m }, tz) {
   const start = entry.kind === "shift" ? entry.shift.clockIn.at : entry.start;
-  const day = localDate(start, tz);
+  const day = start === null ? entry.day : localDate(start, tz);
   const wall = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   const at = zonedTime(day, wall, tz);
-  if (slotKind === "clock_in" || entry.kind === "stray") return at;
+  if (start === null || slotKind === "clock_in" || entry.kind !== "shift") return at;
   const begun = localParts(start, tz);
   if (h * 60 + m >= begun.hour * 60 + begun.minute) return at;
   const next = new Date(`${day}T12:00:00Z`);

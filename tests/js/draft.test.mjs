@@ -26,7 +26,7 @@ const punch = (n, kind, day, time, extra = {}) => ({
   changedAt: null,
   ...extra,
 });
-const base = (punches, { focus = punches.map((p) => p.id), token = "t1" } = {}) => ({
+const base = (punches, { focus = punches.map((p) => p.id), token = "t1", day = null } = {}) => ({
   employee: { id: 2, name: "Bob Lee", first: "Bob", username: "34" },
   own: false,
   tz: TZ,
@@ -36,8 +36,10 @@ const base = (punches, { focus = punches.map((p) => p.id), token = "t1" } = {}) 
   token,
   punches,
   focus,
-  day: null,
+  day,
 });
+// Add shift's base: Bob's week (a Wednesday morning shift) with nothing opened, for Wednesday.
+const adding = () => d.newDraft(base([punch(1, "clock_in", 4, "07:55"), punch(2, "clock_out", 4, "12:10")], { focus: [], day: "2026-11-04" }));
 const ids = (list) => list.map((p) => p.id);
 
 const plain = [punch(1, "clock_in", 3, "07:00"), punch(2, "break_start", 3, "10:00"), punch(3, "break_end", 3, "10:15"), punch(4, "clock_out", 3, "15:30")];
@@ -320,6 +322,46 @@ test("a shift's span names its end's day when that's another day", () => {
     "Monday, November 2, 8:00 AM to Tuesday, November 3, 3:30 PM",
   );
   assert.equal(span([punch(1, "clock_in", 6, "08:00")]), "Friday, November 6, 8:00 AM to working");
+});
+
+test("an added shift starts empty, on its day", () => {
+  const draft = adding();
+  const [entry] = d.shown(draft);
+  const found = d.sections(draft, entry);
+  assert.deepEqual([found.clockIn.missing, found.clockOut.missing, found.breaks, found.lunches, found.strays], [true, true, [], [], []]);
+  assert.equal(d.placeTime(entry, "clock_out", { h: 16, m: 30 }, TZ), at(4, "16:30"));
+  assert.deepEqual(d.changes(draft, { tz: TZ, h24: false }), []);
+  assert.deepEqual(d.blockers(draft), ["Add a clock-in to save."]);
+});
+
+test("an added shift is its new punches, summed up in one line", () => {
+  let draft = adding();
+  draft = d.add(draft, "clock_out", at(4, "21:30"), id(9));
+  const [lone] = d.shown(draft);
+  assert.equal(d.sections(draft, lone).clockOut.punches[0].id, id(9));
+  assert.deepEqual(d.blockers(draft), ["Add a clock-in to save."]);
+  draft = d.add(draft, "clock_in", d.placeTime(lone, "clock_in", { h: 13, m: 0 }, TZ), id(3));
+  draft = d.add(d.add(draft, "break_start", at(4, "15:00"), id(4)), "break_end", at(4, "15:15"), id(5));
+  draft = d.add(d.add(draft, "lunch_start", at(4, "17:00"), id(6)), "lunch_end", at(4, "17:30"), id(7));
+  const [entry] = d.shown(draft);
+  const found = d.sections(draft, entry);
+  assert.deepEqual([found.clockIn.punches[0].id, found.breaks.length, found.lunches.length], [id(3), 1, 1]);
+  assert.deepEqual(d.changeList(draft, { tz: TZ, h24: false }), [{ id: null, text: "New shift: 1:00 PM to 9:30 PM, with 1 break and 1 lunch" }]);
+  assert.deepEqual(d.blockers(draft), []);
+  assert.equal(d.overlap(draft), null);
+  assert.equal(d.joinSplit(adding(), draft), null);
+});
+
+test("an added shift that overlaps one the employee has says which", () => {
+  let draft = adding();
+  draft = d.add(d.add(draft, "clock_in", at(4, "08:00"), id(3)), "clock_out", at(4, "16:30"), id(4));
+  assert.deepEqual(d.overlap(draft), {
+    text: "This overlaps Bob's shift on Wednesday, November 4, from 7:55 AM to 12:10 PM. Change the times, or open that shift instead.",
+    open: `/shift?employee=2&punch=${id(1)}`,
+  });
+  assert.deepEqual(d.blockers(draft), ["Change the times so it doesn't overlap that shift."]);
+  assert.equal(d.joinSplit(adding(), draft), null); // an overlap is refused, not joined
+  assert.equal(d.changes(d.add(adding(), "clock_in", at(4, "13:00"), id(3)), { tz: TZ, h24: false })[0], "New shift: 1:00 PM, no clock-out");
 });
 
 test("typed times", () => {

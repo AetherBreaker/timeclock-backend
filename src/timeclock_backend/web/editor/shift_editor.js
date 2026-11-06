@@ -66,6 +66,7 @@ const SlotField = {
     h24: Boolean,
     readOnly: Boolean,
     working: Boolean,
+    adding: Boolean, // a shift being added: every punch is new, so none is marked so
   },
   emits: ["apply"],
   data: () => ({ bad: false }),
@@ -136,7 +137,7 @@ const SlotField = {
       </div>
       <div v-else-if="place.punches.length === 1" class="slot-one">
         <div class="row-tight">
-          <div :class="['field', { changed: was(place.punches[0]) || edits.get(place.punches[0].id)?.new, bad: bad || red.has(place.punches[0].id) }]">
+          <div :class="['field', { changed: was(place.punches[0]) || (!adding && edits.get(place.punches[0].id)?.new), bad: bad || red.has(place.punches[0].id) }]">
             <span class="page-icon icon-schedule"></span>
             <input :value="time(place.punches[0].at)" :disabled="readOnly" :aria-label="label" @change="typed(place.punches[0], $event)" />
           </div>
@@ -147,7 +148,7 @@ const SlotField = {
           {{ was(place.punches[0]) }}
           <button v-if="!readOnly" class="btn text" @click="$emit('apply', (d) => D.undo(d, place.punches[0].id))"><span class="page-icon icon-undo"></span>Undo</button>
         </div>
-        <div v-else-if="edits.get(place.punches[0].id)?.new" class="was">
+        <div v-else-if="!adding && edits.get(place.punches[0].id)?.new" class="was">
           Added
           <button v-if="!readOnly" class="btn text" @click="$emit('apply', (d) => D.undo(d, place.punches[0].id))"><span class="page-icon icon-undo"></span>Undo</button>
         </div>
@@ -228,7 +229,7 @@ export default {
             punches: [...e.punches, ...moved].sort(order),
             red,
             strays: new Set(moved.map((p) => p.id)),
-            banner: D.banner(e, { tz: this.tz, h24: this.h24 }),
+            banner: e.kind === "new" ? null : D.banner(e, { tz: this.tz, h24: this.h24 }), // a shift being added says what it lacks under Save
             flags: flags(e),
             automatic: out !== null && out.automatic && out.version === null ? out : null,
             hours: e.kind === "shift" ? entryHours(e, this.current, this.hoursOpts) : null,
@@ -242,7 +243,8 @@ export default {
     },
     week() {
       const opts = { ...this.hoursOpts, week: this.draft.base.week };
-      return { before: weekHours(this.draft.base.punches, opts).worked, after: weekHours(this.current, opts).worked };
+      const before = weekHours(this.draft.base.punches, opts).worked;
+      return { before, after: this.overlapNote ? before : weekHours(this.current, opts).worked }; // an overlap merges into the other shift
     },
     changed() {
       return [...this.draft.edits].filter(([, e]) => !e.removed).map(([id]) => id);
@@ -255,6 +257,9 @@ export default {
     },
     conflicts() {
       return D.clashes(this.draft);
+    },
+    overlapNote() {
+      return D.overlap(this.draft, { h24: this.h24 });
     },
     blockers() {
       return D.blockers(this.draft, { connected: this.connected, readOnly: this.readOnly });
@@ -484,6 +489,11 @@ export default {
         <div class="grow">{{ message.text }}</div>
         <a v-if="message.open" class="btn outline" :href="message.open">Open that shift</a>
       </div>
+      <div v-if="overlapNote" class="callout red">
+        <span class="page-icon icon-error"></span>
+        <div class="grow">{{ overlapNote.text }}</div>
+        <a class="btn outline" :href="overlapNote.open">Open that shift</a>
+      </div>
 
       <div class="ed">
         <div class="ed-main">
@@ -501,14 +511,14 @@ export default {
               </div>
               <button class="btn outline" @click="apply((d) => D.confirm(d, v.automatic.id))">Mark as correct</button>
             </div>
-            <div class="card">
+            <div v-if="v.punches.length" class="card">
               <h4>Timeline</h4>
               <editor-timeline
                 :entry="v.entry"
                 :punches="v.punches"
                 :was="was(v)"
                 :red="[...v.red]"
-                :changed="changed"
+                :changed="options.add ? [] : changed"
                 :now="now"
                 :tz="tz"
                 :h24="h24"
@@ -520,9 +530,9 @@ export default {
               <h4>{{ v.entry.kind === "stray" ? "Stray punch" + (v.entry.punches.length > 1 ? "es" : "") : "Shift" }}</h4>
               <div class="row-slots">
                 <editor-slot label="Clock in" kind="clock_in" :place="v.sections.clockIn" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" @apply="apply" />
+                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" @apply="apply" />
                 <editor-slot label="Clock out" kind="clock_out" :place="v.sections.clockOut" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :working="v.entry.kind === 'shift' && v.entry.end === null" @apply="apply" />
+                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :working="v.entry.kind === 'shift' && v.entry.end === null" @apply="apply" />
               </div>
               <div v-if="v.sections.others.length" class="others">
                 <div class="lab">Punches the hours ignore</div>
@@ -537,15 +547,15 @@ export default {
                 </button>
               </div>
             </div>
-            <div v-for="what in ['break', 'lunch']" :key="what" class="card" v-show="v.entry.kind === 'shift' || v.sections[what === 'break' ? 'breaks' : 'lunches'].length">
+            <div v-for="what in ['break', 'lunch']" :key="what" class="card" v-show="v.entry.kind !== 'stray' || v.sections[what === 'break' ? 'breaks' : 'lunches'].length">
               <h4>{{ what === "break" ? "Breaks" : "Lunches" }}</h4>
               <div v-for="(pair, i) in v.sections[what === 'break' ? 'breaks' : 'lunches']" :key="i" class="pair">
                 <span class="lbl">{{ what === "break" ? "Break" : "Lunch" }}</span>
                 <editor-slot label="Start" :kind="what + '_start'" :place="pair.start" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" @apply="apply" />
+                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" @apply="apply" />
                 <span class="to">to</span>
                 <editor-slot label="End" :kind="what + '_end'" :place="pair.end" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" @apply="apply" />
+                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" @apply="apply" />
                 <span class="dur">{{ duration(pair) }}</span>
                 <q-btn v-if="!readOnly" flat round dense size="sm" class="del" aria-label="Remove" @click="removePair(pair)">
                   <span class="page-icon icon-delete"></span>
@@ -554,6 +564,7 @@ export default {
               <button v-if="!readOnly && v.entry.kind === 'shift'" class="btn text" @click="addPair(v, what)">
                 <span class="page-icon icon-add"></span>Add {{ what }}
               </button>
+              <div v-else-if="v.entry.kind === 'new'" class="small muted">Add the clock-in first.</div>
               <div v-else-if="!v.sections[what === 'break' ? 'breaks' : 'lunches'].length" class="small muted">None.</div>
             </div>
             <div v-if="v.sections.strays.length && !readOnly" class="card">
@@ -568,7 +579,7 @@ export default {
             <span class="page-icon icon-info"></span>
             <div>Every punch here is removed. Save to remove them, or Discard to start again.</div>
           </div>
-          <div class="card">
+          <div v-if="!options.add" class="card">
             <h4>History</h4>
             <p v-if="!shownHistory.length" class="small muted">No earlier changes to this shift.</p>
             <ul v-else class="hist">
@@ -611,7 +622,7 @@ export default {
             <ul v-if="changeList.length" class="changes">
               <li v-for="c in changeList" :key="c.id">
                 <span class="page-icon icon-edit"></span><span class="grow">{{ c.text }}</span>
-                <button class="btn text" @click="apply((d) => D.undo(d, c.id))">Undo</button>
+                <button v-if="c.id !== null" class="btn text" @click="apply((d) => D.undo(d, c.id))">Undo</button>
               </li>
             </ul>
             <p v-else class="small muted">None yet.</p>

@@ -153,6 +153,19 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
         with ui.row().classes("chip blue"):
           ui.element("span").classes("page-icon icon-code")
           ui.label("Technical details on")
+      ui.space()
+      # For the employee the list is narrowed to when clicked, unless that's you (spec §6.13).
+      with (
+        ui.button(
+          on_click=lambda: ui.navigate.to(
+            "/shift/new" if employee is None or employee == signin.employee_id else f"/shift/new?employee={employee}"
+          )
+        )
+        .props("no-caps unelevated color=primary text-color=black")
+        .mark("add-shift")
+      ):
+        ui.element("span").classes("page-icon icon-add")
+        ui.label("Add shift")
     with ui.row().classes("ctl"):
       employee_select = (
         ui.select({None: "All employees"}, value=employee, label="Employee", on_change=lambda e: choose("employee", e))

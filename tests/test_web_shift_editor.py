@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 # Third party imports
-from nicegui import app
+from nicegui import app, ui
 from page_sim import page_settings
 from timeclock_schema.shifts import week_bounds
 
@@ -280,3 +280,68 @@ async def test_a_live_change_sends_the_open_editor_a_new_base(db_page: DbPage) -
     while _editor(db_page).props["base"]["token"] == opened:  # noqa: ASYNC110 - props have no change event to wait on
       await asyncio.sleep(0.05)
   assert str(late) in [p["id"] for p in _editor(db_page).props["base"]["punches"]]
+
+
+async def test_add_shift_offers_everyone_but_you(db_page: DbPage) -> None:
+  await db_page.user.open("/shift/new")
+  await db_page.user.should_see("Add a shift")
+  [picker] = db_page.user.find(kind=ui.select, marker="add-employee").elements
+  assert picker.options == {db_page.db.employees[1]: "Bob Lee · ID 34"}  # Ann, signed in, isn't offered
+
+
+async def test_the_lists_add_shift_opens_add_shift(db_page: DbPage) -> None:
+  await db_page.user.open("/")
+  db_page.user.find(marker="add-shift").click()
+  await db_page.user.should_see("Add a shift")
+
+
+async def test_an_employee_and_a_day_open_an_empty_editor(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  db_page.db.punch(bob, "clock_in", _ny(4, "07:55"))
+  await db_page.user.open(f"/shift/new?employee={bob}&date=2026-11-04")
+  await db_page.user.should_see(kind=ShiftEditor)
+  props = _editor(db_page).props
+  assert (props["base"]["focus"], props["base"]["day"], props["options"]["add"], len(props["base"]["punches"])) == (
+    [],
+    "2026-11-04",
+    True,
+    1,
+  )
+
+
+async def test_adding_a_shift_inserts_its_punches(pages_db: PagesDb) -> None:
+  bob = pages_db.employees[1]
+  times = [("clock_in", "08:00"), ("lunch_start", "12:00"), ("lunch_end", "12:30"), ("clock_out", "16:30")]
+  new = [_edit(uuid4(), kind=kind, at=_ny(4, at), new=True) for kind, at in times]
+  result = await _save(pages_db, bob, new, focus=[], note="forgot his badge")
+  assert result.keys() == {"ok", "base"}
+  with pages_db.admin() as conn:
+    added = conn.execute("SELECT kind::text, at, instance_id FROM punches ORDER BY at").fetchall()
+    assert added == [(kind, _ny(4, at), "web") for kind, at in times]
+    assert conn.execute("SELECT count(*), max(note) FROM edits").fetchone() == (1, "forgot his badge")
+
+
+async def test_an_overlapping_new_shift_is_refused_with_a_link(pages_db: PagesDb) -> None:
+  bob = pages_db.employees[1]
+  first = pages_db.punch(bob, "clock_in", _ny(4, "07:55"))
+  pages_db.punch(bob, "clock_out", _ny(4, "12:10"))
+  new = [_edit(uuid4(), kind="clock_in", at=_ny(4, "08:00"), new=True), _edit(uuid4(), kind="clock_out", at=_ny(4, "16:30"), new=True)]
+  result = await _save(pages_db, bob, new, focus=[])
+  assert result == {
+    "refused": "This overlaps Bob's shift on Wednesday, November 4, from 7:55 AM to 12:10 PM. Change the times, or open that shift instead.",
+    "open": f"/shift?employee={bob}&punch={first}",
+  }
+
+
+async def test_an_added_shift_then_opens_in_the_editor(db_page: DbPage, monkeypatch: pytest.MonkeyPatch) -> None:
+  bob = db_page.db.employees[1]
+  await db_page.user.open(f"/shift/new?employee={bob}&date=2026-11-04")
+  await db_page.user.should_see(kind=ShiftEditor)
+  editor, answered = _editor(db_page), asyncio.Event()
+  monkeypatch.setattr(editor, "run_method", lambda *_: answered.set())
+  [listener] = [key for key, found in editor._event_listeners.items() if found.type == "save"]  # pyright: ignore[reportPrivateUsage]
+  new = [_edit(uuid4(), kind="clock_in", at=_ny(4, "08:00"), new=True), _edit(uuid4(), kind="clock_out", at=_ny(4, "16:30"), new=True)]
+  editor._handle_event({"listener_id": listener, "args": await _payload(db_page.db, bob, new, focus=[])})  # pyright: ignore[reportPrivateUsage]
+  await asyncio.wait_for(answered.wait(), 10)
+  await db_page.user.should_see("Wednesday, November 4, 2026")
+  await db_page.user.should_not_see("Add a shift")

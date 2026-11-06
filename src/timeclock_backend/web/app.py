@@ -265,6 +265,13 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
     frame(signin, settings, gate)
     await draw_shift_editor(signin, settings=settings, pools=pools, gate=gate, live=live, now=now, query=request.query_params)
 
+  @ui.page("/shift/new", title=settings.page_name)
+  async def add_shift_page(request: Request) -> None:
+    signin: SignIn = request.state.signin
+    frame(signin, settings, gate)
+    query = request.query_params
+    await draw_shift_editor(signin, settings=settings, pools=pools, gate=gate, live=live, now=now, query=query, add=True)
+
 
 @contextlib.contextmanager
 def _no_signal_capture(_server: uvicorn.Server) -> Generator[None]:
