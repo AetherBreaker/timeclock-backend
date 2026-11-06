@@ -33,8 +33,8 @@ def prefs() -> dict[str, Any]:
   return {**DEFAULT_PREFS, **app.storage.user.get("prefs", {})}
 
 
-def frame(signin: SignIn, settings: PageSettings, gate: Gate) -> None:  # noqa: C901, PLR0915 - one page frame, drawn top to bottom
-  """Draw the frame and start the page's sign-in checks: a timer, and the browser's activity pings."""
+def frame(signin: SignIn, settings: PageSettings, gate: Gate, *, section: str = "shifts") -> None:  # noqa: C901, PLR0915 - one page frame, drawn top to bottom
+  """Draw the frame with the `section` tab marked, and start the page's sign-in checks: a timer, and activity pings."""
   chosen = prefs()
   dark = ui.dark_mode(chosen["dark"])
   leaving = False
@@ -88,7 +88,8 @@ def frame(signin: SignIn, settings: PageSettings, gate: Gate) -> None:  # noqa: 
     ui.element("div").classes("page-logo")
     ui.label(settings.page_name).classes("page-name")
     with ui.row().classes("page-nav"):
-      ui.link("Shifts", "/").classes("page-nav-link on")
+      for name, label, target in (("shifts", "Shifts", "/"), ("employees", "Employees", "/employees")):
+        ui.link(label, target).classes("page-nav-link" + " on" * (name == section)).mark(f"nav-{name}")
     ui.space()
     ui.label("Reconnecting...").classes("chip orange page-reconnecting")  # shown by body.page-offline (theme.css)
     ui.label(signin.email).classes("page-account").mark("page-account")
