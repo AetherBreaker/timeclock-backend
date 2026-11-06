@@ -1,4 +1,4 @@
-"""The page's fixed copy (spec 2026-11-05 §3.4, §3.5), and how it writes times and durations (§2)."""
+"""The page's fixed copy (spec 2026-11-05 §3.4, §3.5, §9), and how it writes times, durations and employee fields (§2)."""
 
 # Standard library imports
 from datetime import date, timedelta
@@ -6,7 +6,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 # Third party imports
-from timeclock_schema.enums import PunchKind
+from timeclock_schema.enums import EmployeeRole, Finger, PunchKind
 
 # Local folder imports
 from .gate import EndReason
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
   # Local folder imports
   from .settings import PageSettings
-  from .store import HistoryChange, Person
+  from .store import EmployeeChange, FieldValue, HistoryChange, Person
 
 REFUSED = "This account can't use this page. If it should have access, ask to have it added."
 SIGNED_OUT = "You're signed out."
@@ -198,6 +198,7 @@ def employee_details(person: Person, groups: Mapping[int, str], tz: ZoneInfo, *,
       f"phone {person.phone or 'none'}",
       f"email {person.email or 'none'}",
       f"updated {stamp(person.updated_at, tz, h24=h24)}",
+      *(() if person.added_by is None else (f"added by {person.added_by}",)),
     )
   )
 
@@ -220,3 +221,56 @@ def change_line(change: HistoryChange, tz: ZoneInfo, *, h24: bool) -> str:
   if new_kind != old_kind:
     return f"{was}: {KIND_LABEL[old_kind]} to {KIND_LABEL[new_kind]}"
   return f"Marked the {_KIND_WORD[old_kind]} at {was} as correct"
+
+
+def phone_label(stored: str | None) -> str:
+  """A stored phone (`+15555550142`) as people write it, "(555) 555-0142"; "" for none, and anything else as stored."""
+  if stored is None:
+    return ""
+  digits = stored.removeprefix("+1")
+  return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}" if len(digits) == 10 and digits.isdecimal() else stored  # noqa: PLR2004
+
+
+FINGER_LABEL: Final[Mapping[Finger, str]] = MappingProxyType({f: f.value.replace("_", " ").capitalize() for f in Finger})
+ROLE_LABEL: Final[Mapping[EmployeeRole, str]] = MappingProxyType({r: r.value.capitalize() for r in EmployeeRole})
+# A logged column's name in History and Your changes; any other column (one changed in DBeaver) shows as stored.
+FIELD_LABEL: Final[Mapping[str, str]] = MappingProxyType(
+  {
+    "first_name": "First name",
+    "middle_name": "Middle name",
+    "last_name": "Last name",
+    "phone": "Phone",
+    "email": "Email",
+    "group_id": "Group",
+    "role": "Role",
+    "fingerprint_exempt": "Fingerprint exemption",
+    "active": "Status",
+  }
+)
+
+
+def field_value(field: str, value: FieldValue, groups: Mapping[int, str]) -> str:  # noqa: PLR0911 - one return per field
+  """A field's value in plain words; the change log's text form ("true", "2") reads as the editor's own values do."""
+  if value is None or value == "":
+    return "empty"
+  match field:
+    case "fingerprint_exempt":
+      return "on" if value in {True, "true"} else "off"
+    case "active":
+      return "Active" if value in {True, "true"} else "Switched off"
+    case "group_id":
+      return groups.get(int(value), f"group {value}")
+    case "role":
+      return ROLE_LABEL[EmployeeRole(value)] if value in set(EmployeeRole) else str(value)
+    case "phone":
+      return phone_label(str(value))
+    case _:
+      return str(value)
+
+
+def employee_change_line(change: EmployeeChange, groups: Mapping[int, str]) -> str:
+  """One logged change in plain words: "Group: Warehouse to Office", "PIN changed" (never a value, spec §9)."""
+  if change.field == "pin":
+    return "PIN changed"
+  old, new = (field_value(change.field, v, groups) for v in (change.old_value, change.new_value))
+  return f"{FIELD_LABEL.get(change.field, change.field)}: {old} to {new}"
