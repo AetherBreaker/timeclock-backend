@@ -16,6 +16,7 @@ if TYPE_CHECKING:
   from pathlib import Path
 
 _COMPLETE = {
+  "PAGE_PUBLIC_URL": "https://page.example",
   "PAGE_SESSION_SECRET": "s" * 64,
   "TIMECLOCK_WEB_PASSWORD": "p" * 48,
   "ZOHO_CLIENT_ID": "page",
