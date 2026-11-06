@@ -155,3 +155,8 @@ def test_the_page_gets_each_of_its_variables_from_coolify() -> None:
   )
   environment = _environment("timeclock-web")
   assert {name: environment.get(name) for name in names} == {name: f"${{{name}:-}}" for name in names}
+
+
+def test_the_proxy_can_find_the_pages_port() -> None:
+  # The image declares no port, and Coolify keeps a domain's port apart from the compose file, so the page names its own.
+  assert SERVICES["timeclock-web"]["expose"] == ["8080"]  # PAGE_PORT's default
