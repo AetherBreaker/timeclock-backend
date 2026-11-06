@@ -107,6 +107,13 @@ def test_the_theme_sets_quasars_colors_for_both_modes() -> None:
   assert 'url("/static/zoho-logo.svg")' in css
 
 
+def test_an_icon_word_stays_lowercase_inside_a_button() -> None:
+  # A Quasar button uppercases its text, and Material Icons draws a glyph only for the lowercase word: the gear showed "SETTINGS".
+  css = (WEB / "static" / "theme.css").read_text(encoding="utf-8")
+  icon_rule = css.split(".page-icon::before {", 1)[1].split("}", 1)[0]
+  assert "text-transform: none;" in icon_rule
+
+
 async def test_the_switch_does_nothing_once_the_sign_in_has_ended(page: PageUnderTest) -> None:
   await sign_in(page, DEVELOPER)
   del page.accounts.accounts[DEVELOPER]  # removed from the allowlist while the page is open

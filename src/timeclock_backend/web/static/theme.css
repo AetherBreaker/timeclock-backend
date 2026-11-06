@@ -124,6 +124,7 @@ body.test-database {
   font-family: "Material Icons";
   font-size: 22px;
   line-height: 1;
+  text-transform: none; /* a Quasar button uppercases its text; the font draws a glyph only for the lowercase word */
   font-feature-settings: "liga";
   -webkit-font-feature-settings: "liga";
 }
