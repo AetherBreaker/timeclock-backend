@@ -28,8 +28,11 @@ from starlette.responses import PlainTextResponse, RedirectResponse, Response
 from . import text
 from .db import PoolAccounts, Pools
 from .gate import EndReason, Gate, SignedOutError
+from .live import Live
 from .settings import PageSettings
 from .shell import frame, prefs
+from .shift_editor import draw_shift_editor
+from .shift_list import draw_shift_list
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -49,20 +52,35 @@ _TEST_FORM_BYTES: Final = 4096
 # The sign-in page and its methods' routes, and the icon, which the sign-in page's tab shows too.
 _PUBLIC_PATHS: Final = frozenset({"/signin", "/signin/zoho", "/auth/zoho", "/signin/test", "/favicon.ico"})
 _PUBLIC_PREFIXES: Final = ("/static/", "/_nicegui")  # the page's files and NiceGUI's (its assets and socket)
-# Activity in the browser, at most once a minute, so working in a page without loading another keeps the sign-in.
+# Activity in the browser, at most once a minute, so working in a page without loading another keeps the sign-in; and
+# `page-offline` on the body while NiceGUI's socket is down, for the Reconnecting chip (spec §6.2).
 _ACTIVITY_SCRIPT: Final = """<script>
 (() => {
   let last = 0;
   const ping = () => { if (Date.now() - last > 60000) { last = Date.now(); emitEvent("page_activity"); } };
   addEventListener("pointerdown", ping, true);
   addEventListener("keydown", ping, true);
+  const watch = () => {
+    if (!window.socket) return setTimeout(watch, 200);
+    window.socket.on("disconnect", () => document.body.classList.add("page-offline"));
+    window.socket.on("connect", () => document.body.classList.remove("page-offline"));
+  };
+  watch();
 })();
+</script>"""
+# The sign-in page drops every draft: a draft lasts until it's saved, discarded, or its sign-in ends (spec §6.2).
+_CLEAR_DRAFTS: Final = """<script>
+try {
+  for (const key of Object.keys(localStorage)) if (key.startsWith("timeclock-draft:")) localStorage.removeItem(key);
+} catch {}
 </script>"""
 
 
 def build(  # noqa: C901, PLR0915 - one linear registration of every route and page; splitting it would only scatter it
   settings: PageSettings,
   accounts: Accounts,
+  pools: Pools,
+  live: Live,
   *,
   zoho_client_kwargs: Mapping[str, Any] | None = None,
   now: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -75,8 +93,10 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
   Args:
     settings: The page's settings.
     accounts: The production allowlist.
+    pools: The databases' pools, which the shift pages read through as the signed-in account.
+    live: The change notifications that refresh open pages.
     zoho_client_kwargs: Extra httpx client arguments for talking to Zoho (tests pass a transport).
-    now: The clock the gate uses.
+    now: The clock the gate and the shift pages use.
   """
   gate = Gate(settings, accounts, app.storage.general, now=now)
   logins = settings.test_logins()
@@ -212,6 +232,7 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
     else:
       return RedirectResponse("/", status_code=303)
     ui.dark_mode(prefs()["dark"])
+    ui.add_body_html(_CLEAR_DRAFTS)
     with ui.column().classes("signin-card"):
       ui.element("div").classes("page-logo")
       ui.label(settings.page_name).classes("signin-title")
@@ -236,9 +257,25 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
   async def home_page(request: Request) -> None:
     signin: SignIn = request.state.signin
     frame(signin, settings, gate)
-    with ui.column().classes("page-body"):
-      ui.label(f"Signed in as {signin.email}").mark("signed-in-as")
-      ui.label("Shifts and employees will appear here.")
+    await draw_shift_list(signin, settings=settings, pools=pools, gate=gate, live=live, now=now, query=request.query_params)
+
+  # The shift editor's page outlives a dropped connection as long as the sign-in would (spec §6.2), so it carries on
+  # without a reload. Per page: the socket's heartbeat follows the global timeout, so a long global one would hide a dead
+  # connection for half an hour, and keep every page left behind reading on each live update.
+  outlives = settings.idle_minutes * 60
+
+  @ui.page("/shift", title=settings.page_name, reconnect_timeout=outlives)
+  async def shift_page(request: Request) -> None:
+    signin: SignIn = request.state.signin
+    frame(signin, settings, gate)
+    await draw_shift_editor(signin, settings=settings, pools=pools, gate=gate, live=live, now=now, query=request.query_params)
+
+  @ui.page("/shift/new", title=settings.page_name, reconnect_timeout=outlives)
+  async def add_shift_page(request: Request) -> None:
+    signin: SignIn = request.state.signin
+    frame(signin, settings, gate)
+    query = request.query_params
+    await draw_shift_editor(signin, settings=settings, pools=pools, gate=gate, live=live, now=now, query=query, add=True)
 
 
 @contextlib.contextmanager
@@ -270,6 +307,7 @@ def serve() -> None:
   # Socket logging creates no logs folder, and the page's volume starts empty; the healthcheck reads the heartbeat there.
   settings.log_loc_folder.mkdir(parents=True, exist_ok=True)
   pools = Pools.create(settings)
+  live = Live(pools)
   # asyncio holds tasks weakly, so the heartbeat is kept here, and its failure shuts the page down (as the clock).
   running: set[asyncio.Future[Any]] = set()
 
@@ -294,13 +332,14 @@ def serve() -> None:
       tz=settings.tz,
     )
     keep("Heartbeat", heartbeat)
+    keep("Live updates", live.run())  # it retries a lost database itself, so it ends only by a fault
 
   app.on_startup(lambda: keep("Startup", startup()))  # through keep: NiceGUI would only log the exception
   app.on_shutdown(pools.close)
   # A plain lambda: aeth_ext holds bound methods weakly. app.shutdown() sets uvicorn's should_exit.
   register_for_shutdown(lambda _trails: app.shutdown(), phase=ShutdownPhase.THREADED)
   uvicorn.Server.capture_signals = _no_signal_capture  # pyright: ignore[reportAttributeAccessIssue]  # as the clock
-  build(settings, PoolAccounts(pools))
+  build(settings, PoolAccounts(pools), pools, live)
   ui.run(
     host="0.0.0.0",  # Coolify's proxy reaches it over the coolify network
     port=settings.port,

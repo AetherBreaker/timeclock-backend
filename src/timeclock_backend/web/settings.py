@@ -36,6 +36,8 @@ class PageSettings(BaseSettings):
   production_db: Annotated[str, Field(alias="PAGE_PRODUCTION_DB")] = "timeclock"
   test_db: Annotated[str, Field(alias="PAGE_TEST_DB")] = "timeclock_test"
   port: Annotated[int, Field(alias="PAGE_PORT")] = 8080
+  # Who the editor's "found a problem in itself" dialog says to tell (spec §6.9).
+  fault_contact: Annotated[str, Field(alias="PAGE_FAULT_CONTACT")] = "Jacob"
 
   def test_logins(self) -> dict[str, SecretStr]:
     """The test sign-in's passwords by lowercase email (badges are lowercase, 0014); empty when it's off.

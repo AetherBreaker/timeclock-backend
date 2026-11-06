@@ -130,3 +130,10 @@ def test_a_refused_start_keeps_every_secret_out_of_the_crash_alert(monkeypatch: 
     _serve(monkeypatch, **values)
   alert = _alert_text(raised.value)
   assert [secret for secret in _SECRETS if secret in alert] == []
+
+
+def test_serve_keeps_nicegui_s_quick_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
+  run = _serve(monkeypatch, **_COMPLETE)["run"]
+  assert run is not None
+  # The socket pings every 0.8 x the global reconnect_timeout: a long one would hide a dead connection for half an hour.
+  assert "reconnect_timeout" not in run

@@ -11,6 +11,7 @@ Stop it with `docker stop timeclock-backend-pg` (`--rm` deletes it).
 
 # Standard library imports
 import asyncio
+import contextlib
 import importlib
 import os
 import sys
@@ -33,13 +34,17 @@ import pytest
 from fake_zoho import FakeZoho
 from nicegui import app
 from nicegui.testing import user_simulation
-from page_sim import FakeAccounts, FakeClock, PageUnderTest, page_settings
+from page_sim import EMPLOYEE_SQL, DbPage, FakeAccounts, FakeClock, PagesDb, PageUnderTest, page_settings, sign_in
 from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict
 
 # First party imports
 from timeclock_backend import databases
+from timeclock_backend.bootstrap import bootstrap
 from timeclock_backend.databases import Database
+from timeclock_backend.web.db import PoolAccounts, Pools
 from timeclock_backend.web.gate import Account
+from timeclock_backend.web.live import Live
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -91,14 +96,87 @@ async def page(page_values: dict[str, str]) -> AsyncIterator[PageUnderTest]:
   accounts = FakeAccounts({"ann@example.com": Account(7, developer=False), "dev@example.com": Account(None, developer=True)})
   clock = FakeClock()
   page_sim.BUILD_ARGS.clear()
+  settings = page_settings(
+    **{"ZOHO_ACCOUNTS_URL": FakeZoho.ISSUER, "ZOHO_CLIENT_ID": "page", "PAGE_PUBLIC_URL": "http://test", **page_values}
+  )
+  pools = Pools.create(settings)  # never opened: these tests reach no database
   page_sim.BUILD_ARGS.update(
-    settings=page_settings(
-      **{"ZOHO_ACCOUNTS_URL": FakeZoho.ISSUER, "ZOHO_CLIENT_ID": "page", "PAGE_PUBLIC_URL": "http://test", **page_values}
-    ),
+    settings=settings,
     accounts=accounts,
+    pools=pools,
+    live=Live(pools),
     zoho_client_kwargs={"transport": zoho.transport},
     now=clock,
   )
   async with user_simulation(main_file=Path(__file__).with_name("page_main.py")) as user:
     app.storage.general.clear()  # it's a file under NICEGUI_STORAGE_PATH, shared by every test
     yield PageUnderTest(user, zoho, accounts, clock)
+
+
+@pytest.fixture
+async def pages_db(pg_server: str) -> AsyncIterator[PagesDb]:
+  """Production and test databases bootstrapped on the throwaway server, with the page's pools open on them."""
+  prod = Database(f"tcb_{uuid4().hex[:12]}", "timeclock_clocks", production=True)
+  test = Database(f"tcb_{uuid4().hex[:12]}", "timeclock_test_clocks", production=False)
+  email = f"ed-{uuid4().hex[:8]}@example.com"
+  await bootstrap([prod, test])
+  with psycopg.connect(pg_server, autocommit=True) as admin:
+    admin.execute("ALTER ROLE timeclock_web PASSWORD 'web-test'")
+  ids: list[tuple[int, int]] = []
+  for database in (prod, test):
+    with psycopg.connect(pg_server, dbname=database.name, autocommit=True) as conn:
+      first = conn.execute(EMPLOYEE_SQL, ("Ann", "Lee", "12")).fetchone()
+      second = conn.execute(EMPLOYEE_SQL, ("Bob", "Lee", "34")).fetchone()
+      assert first is not None and second is not None
+      ids.append((first[0], second[0]))
+  assert ids[0] == ids[1]
+  with psycopg.connect(pg_server, dbname=prod.name, autocommit=True) as conn:
+    conn.execute("INSERT INTO backend.editors (email, employee_id) VALUES (%s, %s)", (email, ids[0][0]))
+  server = conninfo_to_dict(pg_server)
+  settings = page_settings(
+    PAGE_POSTGRES_HOST=server["host"],
+    PAGE_POSTGRES_PORT=server["port"],
+    TIMECLOCK_WEB_PASSWORD="web-test",
+    PAGE_PRODUCTION_DB=prod.name,
+    PAGE_TEST_DB=test.name,
+  )
+  pools = Pools.create(settings)
+  await pools.open()
+  try:
+    yield PagesDb(pg_server, prod, test, email, ids[0], pools, PoolAccounts(pools), settings)
+  finally:
+    await pools.close()
+    with psycopg.connect(pg_server, dbname=prod.name, autocommit=True) as conn:
+      conn.execute("DELETE FROM backend.editors WHERE email = %s", (email,))  # drops the badge
+    with psycopg.connect(pg_server, autocommit=True) as admin:
+      for database in (prod, test):
+        admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(database.name)))
+
+
+@pytest.fixture
+async def db_page(pages_db: PagesDb) -> AsyncIterator[DbPage]:
+  """The page over `pages_db`'s databases and allowlist, signed in through the fake Zoho, with live updates running."""
+  zoho = FakeZoho("page")
+  clock = FakeClock()
+  live = Live(pages_db.pools, quiet=0.05, retry=0.1)
+  listening = asyncio.create_task(live.run())
+  await asyncio.wait_for(asyncio.gather(live.listening[False].wait(), live.listening[True].wait()), 10)
+  page_sim.BUILD_ARGS.clear()
+  page_sim.BUILD_ARGS.update(
+    settings=page_settings(ZOHO_ACCOUNTS_URL=FakeZoho.ISSUER, ZOHO_CLIENT_ID="page", PAGE_PUBLIC_URL="http://test"),
+    accounts=pages_db.accounts,
+    pools=pages_db.pools,
+    live=live,
+    zoho_client_kwargs={"transport": zoho.transport},
+    now=clock,
+  )
+  try:
+    async with user_simulation(main_file=Path(__file__).with_name("page_main.py")) as user:
+      app.storage.general.clear()
+      page = DbPage(user, zoho, FakeAccounts(), clock, pages_db)
+      await sign_in(page, pages_db.email)
+      yield page
+  finally:
+    listening.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+      await listening
