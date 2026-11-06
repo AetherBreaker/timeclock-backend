@@ -406,7 +406,8 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
     return
 
   own = employee == signin.employee_id
-  focus = set() if entry is None else {p.id for p in entry.punches}
+  opened_ids = [] if entry is None else [p.id for p in entry.punches]  # in punch order, as the base sends them
+  focus = set(opened_ids)
   database = "test" if signin.test_database else "production"
   with body:
     if entry is not None:
@@ -429,7 +430,7 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
         ui.element("span").classes("page-icon icon-lock")
         ui.label(text.OWN_SHIFT)
     editor = ShiftEditor(
-      base=base_json(ctx, person, own=own, punches=punches, focus=focus, week=week, now=opened, day=day),
+      base=base_json(ctx, person, own=own, punches=punches, focus=opened_ids, week=week, now=opened, day=day),
       history=history_json(history, tz, h24=h24),
       options={
         "h24": h24,
@@ -506,7 +507,8 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
     token = window_token(fresh)
     with client:
       editor.set_base(
-        base_json(ctx, person, own=own, punches=fresh, focus=focus, week=week, now=now(), day=day), history_json(items, tz, h24=h24)
+        base_json(ctx, person, own=own, punches=fresh, focus=opened_ids, week=week, now=now(), day=day),
+        history_json(items, tz, h24=h24),
       )
       if entry is not None and (shown := _entry_holding(fresh, focus, as_of=now())) is not None:
         chips.refresh(shown)
