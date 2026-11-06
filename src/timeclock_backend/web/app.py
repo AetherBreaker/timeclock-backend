@@ -27,6 +27,7 @@ from starlette.responses import PlainTextResponse, RedirectResponse, Response
 # Local folder imports
 from . import text
 from .db import PoolAccounts, Pools
+from .employee_editor import draw_employee_editor
 from .employee_list import draw_employee_list
 from .gate import EndReason, Gate, SignedOutError
 from .live import Live
@@ -276,6 +277,13 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
     signin: SignIn = request.state.signin
     frame(signin, settings, gate, section="employees")
     await draw_employee_list(signin, settings=settings, pools=pools, gate=gate, live=live, query=request.query_params)
+
+  # Its draft lives in the page's client, so it outlives a dropped connection as the shift editor does (spec §9).
+  @ui.page("/employee", title=settings.page_name, reconnect_timeout=outlives)
+  async def employee_page(request: Request) -> None:
+    signin: SignIn = request.state.signin
+    frame(signin, settings, gate, section="employees")
+    await draw_employee_editor(signin, settings=settings, pools=pools, gate=gate, live=live, query=request.query_params)
 
   @ui.page("/shift/new", title=settings.page_name, reconnect_timeout=outlives)
   async def add_shift_page(request: Request) -> None:

@@ -28,6 +28,17 @@ FAILED = "Sign-in with Zoho didn't work. Try again."
 WRONG_PASSWORD = "That email and password don't match a test account."
 DB_DOWN = "The database can't be reached right now. Try again in a minute."
 OWN_SHIFT = "This is your own shift. Another editor has to change it."
+OWN_RECORD = (
+  "This is you. You can change your name, contact details and PIN. Another editor has to change your group, role, fingerprint"
+  " exemption and active status."
+)
+EMPLOYEE_GONE = "This employee isn't in the database."
+EMPLOYEE_SAVE_FAILED = "The save didn't go through. Try again; your changes are still here."
+# The clock's own words for the same fields (timeclock-system `ui/text.py`).
+FIRST_NAME_REQUIRED = "Enter a first name"
+LAST_NAME_REQUIRED = "Enter a last name"
+PHONE_INVALID = "Enter a 10-digit US phone number"
+EMAIL_INVALID = "Enter an email like name@example.com"
 SAVE_FAILED = "The save didn't go through. Reload the page and try again; your changes are kept in this browser."
 # An added shift with no clock-out (§6.13); `editor/draft.js` says the same.
 ADD_CLOCK_OUT = "Add the clock-out to save. Only a shift that started today, with nothing after it, can stay open."
@@ -274,3 +285,10 @@ def employee_change_line(change: EmployeeChange, groups: Mapping[int, str]) -> s
     return "PIN changed"
   old, new = (field_value(change.field, v, groups) for v in (change.old_value, change.new_value))
   return f"{FIELD_LABEL.get(change.field, change.field)}: {old} to {new}"
+
+
+def switch_off_note(first: str) -> str:
+  """What switching Active off does (spec §9, §10), shown before it's saved."""
+  return (
+    f"Switched off, {first} can't clock in at any clock. A shift {first} is working can still be finished. Shifts and history stay."
+  )

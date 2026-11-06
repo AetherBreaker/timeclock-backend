@@ -670,6 +670,65 @@ table.sh td .chip {
   margin-left: 6px;
 }
 
+/* The employee editor (mockups K to M) */
+.employee-editor {
+  width: 100%;
+  gap: 12px;
+}
+
+.employee-editor .card .h4 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.employee-editor .fields {
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.employee-editor .ef {
+  flex: 1 1 180px;
+  gap: 2px;
+}
+
+.employee-editor .ef.wide {
+  flex-basis: 260px;
+}
+
+.employee-editor .ef .q-select {
+  min-width: 200px;
+}
+
+.employee-editor .lockrow {
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.employee-editor .changed .q-field__control::before {
+  border-color: var(--sft-blue);
+  border-width: 2px;
+}
+
+.employee-editor .q-toggle.changed .q-toggle__label {
+  color: var(--sft-blue);
+}
+
+.employee-editor .print {
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.employee-editor .hist-note {
+  font-style: italic;
+}
+
 /* NiceGUI's own connection popup gives way to the top bar's chip (spec §6.2). */
 #popup.nicegui-error-popup {
   display: none !important;
