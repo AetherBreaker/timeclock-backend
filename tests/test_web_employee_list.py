@@ -103,3 +103,16 @@ async def test_the_list_updates_live(db_page: DbPage) -> None:
   with db_page.db.admin() as conn:
     conn.execute(EMPLOYEE_SQL, ("Dee", "Ng", "78"))
   await db_page.user.should_see("Dee Ng", retries=50)
+
+
+async def test_a_group_in_the_address_opens_filtered(db_page: DbPage) -> None:
+  # Back to a filtered list, a reload or a bookmark; a group that's gone since shows everyone.
+  ann, bob = db_page.db.employees
+  warehouse = db_page.db.group("Warehouse")
+  dee = db_page.db.employee("Dee", "Moss", "78", group_id=warehouse)
+  await db_page.user.open(f"/employees?group={warehouse}")
+  await db_page.user.should_see(marker=f"employee-row-{dee}")
+  assert _rows(db_page) == [dee]
+  await db_page.user.open("/employees?group=999999")
+  await db_page.user.should_see(marker=f"employee-row-{dee}")
+  assert _rows(db_page) == [ann, bob, dee]

@@ -77,7 +77,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
     return f"/?{urlencode(present)}" if present else "/"
 
   async def reread(*, touch: bool) -> None:
-    nonlocal data, down, week
+    nonlocal data, down, week, employee, group
     async with reading:
       try:
         async with editor_transaction(pools, gate, storage, session, test_database=signin.test_database, touch=touch) as conn:
@@ -103,13 +103,15 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
       ctx = data[0]
       week_label.set_text(text.week_label(data[2]))
       people = sorted(ctx.people.values(), key=lambda p: p.sort_key)
-      options: list[tuple[ui.select, dict[Any, str]]] = [
-        (employee_select, {None: "All employees", **{p.id: f"{p.name} · ID {p.username}" for p in people}}),
-        (group_select, {None: "All groups", **dict(sorted(ctx.groups.items(), key=lambda g: g[1].casefold()))}),
+      employee = employee if employee in ctx.people else None  # one in the address that's gone since
+      group = group if group in ctx.groups else None
+      options: list[tuple[ui.select, dict[Any, str], int | None]] = [
+        (employee_select, {None: "All employees", **{p.id: f"{p.name} · ID {p.username}" for p in people}}, employee),
+        (group_select, {None: "All groups", **dict(sorted(ctx.groups.items(), key=lambda g: g[1].casefold()))}, group),
       ]
-      for select, wanted in options:
+      for select, wanted, value in options:
         if select.options != wanted:
-          select.set_options(wanted, value=select.value if select.value in wanted else None)
+          select.set_options(wanted, value=value)
     await rows.refresh()  # awaited: an unawaited one runs later, so the first read's would redraw the first drawing
 
   async def go(to: date | None) -> None:
@@ -167,14 +169,15 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
         ui.element("span").classes("page-icon icon-add")
         ui.label("Add shift")
     with ui.row().classes("ctl"):
+      # Their values come with their options (reread): one they don't hold yet is refused.
       employee_select = (
-        ui.select({None: "All employees"}, value=employee, label="Employee", on_change=lambda e: choose("employee", e))
+        ui.select({None: "All employees"}, value=None, label="Employee", on_change=lambda e: choose("employee", e))
         .props("outlined dense options-dense")
         .classes("filter")
         .mark("filter-employee")
       )
       group_select = (
-        ui.select({None: "All groups"}, value=group, label="Group", on_change=lambda e: choose("group", e))
+        ui.select({None: "All groups"}, value=None, label="Group", on_change=lambda e: choose("group", e))
         .props("outlined dense options-dense")
         .classes("filter")
         .mark("filter-group")

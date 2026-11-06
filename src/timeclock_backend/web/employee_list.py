@@ -74,7 +74,7 @@ async def draw_employee_list(  # noqa: C901, PLR0915 - one page: its state, its 
     return f"/employees?{urlencode(present)}" if present else "/employees"
 
   async def reread(*, touch: bool) -> None:
-    nonlocal data, down
+    nonlocal data, down, group
     async with reading:
       try:
         async with editor_transaction(pools, gate, storage, session, test_database=signin.test_database, touch=touch) as conn:
@@ -90,8 +90,9 @@ async def draw_employee_list(  # noqa: C901, PLR0915 - one page: its state, its 
         down = True
     if data is not None:
       wanted = {None: "All groups", **dict(sorted(data.groups.items(), key=lambda g: g[1].casefold()))}
+      group = group if group in wanted else None  # one in the address that's gone since
       if group_select.options != wanted:
-        group_select.set_options(wanted, value=group_select.value if group_select.value in wanted else None)
+        group_select.set_options(wanted, value=group)
     await rows.refresh()
 
   def choose(name: str, value: Any) -> None:
@@ -120,7 +121,8 @@ async def draw_employee_list(  # noqa: C901, PLR0915 - one page: its state, its 
         "outlined dense clearable"
       ).classes("filter search").mark("employee-search")
       group_select = (
-        ui.select({None: "All groups"}, value=group, label="Group", on_change=lambda e: choose("group", e.value))
+        # Its value comes with its options (reread): one they don't hold yet is refused.
+        ui.select({None: "All groups"}, value=None, label="Group", on_change=lambda e: choose("group", e.value))
         .props("outlined dense options-dense")
         .classes("filter")
         .mark("filter-group")
