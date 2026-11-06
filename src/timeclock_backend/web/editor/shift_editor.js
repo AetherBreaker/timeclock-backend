@@ -555,18 +555,24 @@ export default {
             </div>
             <div v-for="what in ['break', 'lunch']" :key="what" class="card" v-show="v.entry.kind !== 'stray' || v.sections[what === 'break' ? 'breaks' : 'lunches'].length">
               <h4>{{ what === "break" ? "Breaks" : "Lunches" }}</h4>
-              <div v-for="(pair, i) in v.sections[what === 'break' ? 'breaks' : 'lunches']" :key="i" class="pair">
-                <span class="lbl">{{ what === "break" ? "Break" : "Lunch" }}</span>
-                <editor-slot label="Start" :kind="what + '_start'" :place="pair.start" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :technical="options.technical" @apply="apply" />
-                <span class="to">to</span>
-                <editor-slot label="End" :kind="what + '_end'" :place="pair.end" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :technical="options.technical" @apply="apply" />
-                <span class="dur">{{ duration(pair) }}</span>
-                <q-btn v-if="!readOnly" flat round dense size="sm" class="del" aria-label="Remove" @click="removePair(pair)">
-                  <span class="page-icon icon-delete"></span>
-                </q-btn>
-              </div>
+              <template v-for="(pair, i) in v.sections[what === 'break' ? 'breaks' : 'lunches']" :key="i">
+                <div class="pair">
+                  <span class="lbl">{{ what === "break" ? "Break" : "Lunch" }}</span>
+                  <editor-slot label="Start" :kind="what + '_start'" :place="pair.start" :entry="v.entry" :base="baseById" :edits="draft.edits"
+                    :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" @apply="apply" />
+                  <span class="to">to</span>
+                  <editor-slot label="End" :kind="what + '_end'" :place="pair.end" :entry="v.entry" :base="baseById" :edits="draft.edits"
+                    :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" @apply="apply" />
+                  <span class="dur">{{ duration(pair) }}</span>
+                  <q-btn v-if="!readOnly" flat round dense size="sm" class="del" aria-label="Remove" @click="removePair(pair)">
+                    <span class="page-icon icon-delete"></span>
+                  </q-btn>
+                </div>
+                <!-- Below the pair, not under each field, so the pair stays on one line (mockup H). -->
+                <template v-if="options.technical">
+                  <div v-for="p in [...pair.start.punches, ...pair.end.punches]" :key="p.id" class="det">{{ D.punchDetail(p, { tz, h24 }) }}</div>
+                </template>
+              </template>
               <button v-if="!readOnly && v.entry.kind === 'shift'" class="btn text" @click="addPair(v, what)">
                 <span class="page-icon icon-add"></span>Add {{ what }}
               </button>
