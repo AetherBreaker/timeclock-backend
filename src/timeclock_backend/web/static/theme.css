@@ -32,6 +32,29 @@ body.body--dark {
   --line: #34342f;
   --header-bg: #191917;
   --shadow: rgba(0, 0, 0, 0.55);
+  --line2: #292925;
+  --field-border: #5a5a55;
+  --hover: #2e2b14;
+  --link: #6fb3ff;
+  --details-bg: #141413;
+  --details: #b5b5b0;
+  /* Flags (chips) and callouts (§5.5): red needs fixing, orange automatic, grey changed, blue working. */
+  --chip-red-bg: #4a1418;
+  --chip-red: #ff9aa2;
+  --chip-orange-bg: #4a2e0a;
+  --chip-orange: #ffc06b;
+  --chip-grey-bg: #34342f;
+  --chip-grey: #c9c9c5;
+  --chip-blue-bg: #13314f;
+  --chip-blue: #8cc4ff;
+  --callout-red-bg: #3a1215;
+  --callout-red: #ffc2c7;
+  --callout-orange-bg: #3a260a;
+  --callout-orange: #ffd9a3;
+  --callout-blue-bg: #102a45;
+  --callout-blue: #bcdcff;
+  --callout-grey-bg: #2a2a27;
+  --callout-grey: #dddddd;
 }
 
 body.body--light {
@@ -43,6 +66,28 @@ body.body--light {
   --line: #e3e3e3;
   --header-bg: #ffffff;
   --shadow: rgba(0, 0, 0, 0.15);
+  --line2: #f1f1f1;
+  --field-border: #bdbdbd;
+  --hover: #fffbd6;
+  --link: #1565c0;
+  --details-bg: #f2f2f2;
+  --details: #555555;
+  --chip-red-bg: #fde7e9;
+  --chip-red: #b3121f;
+  --chip-orange-bg: #ffecd2;
+  --chip-orange: #9a5300;
+  --chip-grey-bg: #ececec;
+  --chip-grey: #555555;
+  --chip-blue-bg: #e1effd;
+  --chip-blue: #1561b8;
+  --callout-red-bg: #fde7e9;
+  --callout-red: #7c0b14;
+  --callout-orange-bg: #ffecd2;
+  --callout-orange: #5e3300;
+  --callout-blue-bg: #e1effd;
+  --callout-blue: #0d3a70;
+  --callout-grey-bg: #ececec;
+  --callout-grey: #333333;
 }
 
 body {
@@ -105,6 +150,29 @@ body.test-database {
   font-size: 16px;
 }
 
+/* The sections, in the top bar */
+.page-nav {
+  align-self: stretch;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+
+.page-nav-link {
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  margin-bottom: -3px;
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 500;
+  border-bottom: 3px solid transparent;
+}
+
+.page-nav-link.on {
+  color: var(--text);
+  border-bottom-color: var(--text);
+}
+
 .page-account {
   color: var(--muted);
   font-size: 13px;
@@ -131,6 +199,33 @@ body.test-database {
 
 .icon-gear::before {
   content: "settings";
+}
+
+.icon-back::before {
+  content: "chevron_left";
+}
+
+.icon-next::before {
+  content: "chevron_right";
+}
+
+.icon-add::before {
+  content: "add";
+}
+
+.icon-lock::before {
+  content: "lock";
+  font-size: 15px;
+}
+
+.icon-warning::before {
+  content: "warning";
+  font-size: 20px;
+}
+
+.icon-code::before {
+  content: "code";
+  font-size: 15px;
 }
 
 .icon-signout::before {
@@ -218,4 +313,257 @@ body.test-database {
   height: 20px;
   margin-right: 10px;
   background: url("/static/zoho-logo.svg") center / contain no-repeat;
+}
+
+/* Shared pieces: chips, callouts, plain text styles */
+.muted {
+  color: var(--muted);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 12px;
+  padding: 2px 9px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-wrap: nowrap;
+}
+
+.q-btn.chip {
+  min-height: 0;
+  line-height: 1.5;
+  text-transform: none;
+}
+
+.chip.on {
+  box-shadow: 0 0 0 2px currentColor;
+}
+
+.chip.red {
+  background: var(--chip-red-bg);
+  color: var(--chip-red);
+}
+
+.chip.orange {
+  background: var(--chip-orange-bg);
+  color: var(--chip-orange);
+}
+
+.chip.grey {
+  background: var(--chip-grey-bg);
+  color: var(--chip-grey);
+}
+
+.chip.blue {
+  background: var(--chip-blue-bg);
+  color: var(--chip-blue);
+}
+
+.callout {
+  width: 100%;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: nowrap;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+.callout.red {
+  background: var(--callout-red-bg);
+  color: var(--callout-red);
+}
+
+.callout.orange {
+  background: var(--callout-orange-bg);
+  color: var(--callout-orange);
+}
+
+.callout.blue {
+  background: var(--callout-blue-bg);
+  color: var(--callout-blue);
+}
+
+.callout.grey {
+  background: var(--callout-grey-bg);
+  color: var(--callout-grey);
+}
+
+.link-button {
+  color: var(--link);
+}
+
+/* The shift list (mockup B, I) */
+.shift-list {
+  width: 100%;
+  gap: 14px;
+}
+
+.ctl {
+  align-items: center;
+  gap: 12px;
+}
+
+.ctl-title {
+  margin-right: 6px;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.wk {
+  align-items: center;
+  gap: 2px;
+  flex-wrap: nowrap;
+  background: var(--surface);
+  border: 1px solid var(--field-border);
+  border-radius: 6px;
+}
+
+.wk .q-btn {
+  color: var(--muted);
+}
+
+.wk-label {
+  padding: 0 10px;
+  font-weight: 500;
+}
+
+.filter {
+  min-width: 220px;
+}
+
+.attention-counts {
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+}
+
+.attention-lead {
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+.toggle {
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.card {
+  width: 100%;
+  padding: 14px 16px;
+  background: var(--surface);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px var(--shadow);
+}
+
+.emp {
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.emp .nm {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.emp .nm.own {
+  color: var(--muted);
+}
+
+.eid {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.tot {
+  margin-left: auto;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.tot-hours {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.empdet {
+  margin: 4px 0 8px;
+  padding: 5px 9px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--details);
+  background: var(--details-bg);
+  border-radius: 4px;
+}
+
+table.sh {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table.sh th {
+  padding: 6px 10px;
+  text-align: left;
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+table.sh td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line2);
+  white-space: nowrap;
+}
+
+table.sh tr:last-child td {
+  border-bottom: none;
+}
+
+table.sh tr.r:hover td {
+  background: var(--hover);
+  cursor: pointer;
+}
+
+table.sh tr.red td:first-child {
+  box-shadow: inset 4px 0 0 var(--sft-red);
+}
+
+table.sh tr.orange td:first-child {
+  box-shadow: inset 4px 0 0 var(--sft-orange);
+}
+
+table.sh tr.mine td {
+  color: var(--muted);
+}
+
+table.sh .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+table.sh td.st {
+  width: 1%;
+}
+
+table.sh td.mono {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  color: var(--details);
+}
+
+table.sh .chips {
+  gap: 4px;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.empty {
+  padding: 8px 2px;
 }

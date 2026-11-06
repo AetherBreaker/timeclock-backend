@@ -31,6 +31,7 @@ from .gate import EndReason, Gate, SignedOutError
 from .live import Live
 from .settings import PageSettings
 from .shell import frame, prefs
+from .shift_list import draw_shift_list
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -81,7 +82,7 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
     pools: The databases' pools, which the shift pages read through as the signed-in account.
     live: The change notifications that refresh open pages.
     zoho_client_kwargs: Extra httpx client arguments for talking to Zoho (tests pass a transport).
-    now: The clock the gate uses.
+    now: The clock the gate and the shift pages use.
   """
   gate = Gate(settings, accounts, app.storage.general, now=now)
   logins = settings.test_logins()
@@ -241,9 +242,7 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
   async def home_page(request: Request) -> None:
     signin: SignIn = request.state.signin
     frame(signin, settings, gate)
-    with ui.column().classes("page-body"):
-      ui.label(f"Signed in as {signin.email}").mark("signed-in-as")
-      ui.label("Shifts and employees will appear here.")
+    await draw_shift_list(signin, settings=settings, pools=pools, gate=gate, live=live, now=now, query=request.query_params)
 
 
 @contextlib.contextmanager

@@ -36,7 +36,7 @@ async def test_a_test_account_signs_in_with_its_password(page: PageUnderTest) ->
   reply = await _post(page, "ANN@example.com ", PASSWORD)  # matched whatever the casing, as badges are lowercase
   assert (reply.status_code, reply.headers["location"]) == (303, "/")
   await page.user.open("/")
-  await page.user.should_see("Signed in as ann@example.com")
+  await page.user.should_see(marker="page-account", content="ann@example.com")
 
 
 async def test_a_wrong_password_and_an_unlisted_email_get_the_same_message(page: PageUnderTest) -> None:

@@ -21,7 +21,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Per browser, in app.storage.user (§11). Dark by default (§2); the others take effect in the shift and employee pages.
+# Per browser, in app.storage.user (§11). Dark by default (§2); the others take effect in the shift and employee pages,
+# which draw with them, so changing one reloads the page.
 DEFAULT_PREFS: Final = {"dark": True, "h24": False, "technical": False}
 # How often an open page checks its sign-in without counting as activity, so it leaves soon after the sign-in ends.
 SESSION_CHECK_SECS = 30
@@ -74,6 +75,8 @@ def frame(signin: SignIn, settings: PageSettings, gate: Gate) -> None:  # noqa: 
     app.storage.user["prefs"] = {**prefs(), name: e.value}  # a new dict, so the storage sees the change
     if name == "dark":
       dark.set_value(e.value)
+    else:
+      ui.navigate.reload()
 
   if signin.test_database:
     ui.query("body").classes(add="test-database")
@@ -84,8 +87,10 @@ def frame(signin: SignIn, settings: PageSettings, gate: Gate) -> None:  # noqa: 
   with ui.row().classes("page-header"):
     ui.element("div").classes("page-logo")
     ui.label(settings.page_name).classes("page-name")
+    with ui.row().classes("page-nav"):
+      ui.link("Shifts", "/").classes("page-nav-link on")
     ui.space()
-    ui.label(signin.email).classes("page-account")
+    ui.label(signin.email).classes("page-account").mark("page-account")
     with ui.button().props("flat round").classes("page-gear").mark("gear"):
       ui.element("span").classes("page-icon icon-gear")  # the glyph comes from the theme (§2)
       with ui.menu().classes("page-bubble"):  # opens on the same page, no page load (§11)

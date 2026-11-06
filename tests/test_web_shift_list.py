@@ -1,0 +1,210 @@
+"""Tests for the shift list (spec 2026-11-05 §7, mockup screens B and I), over real databases."""
+
+# Standard library imports
+from datetime import UTC, date, datetime, time
+from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
+
+# Third party imports
+from nicegui import ui
+from page_sim import sign_in
+
+# First party imports
+from timeclock_backend.web import text
+
+if TYPE_CHECKING:
+  # Standard library imports
+  from uuid import UUID
+
+  # Third party imports
+  from page_sim import DbPage, PageUnderTest
+
+NY = ZoneInfo("America/New_York")
+
+
+def _ny(day: int, clock: str, month: int = 11) -> datetime:
+  return datetime.combine(date(2026, month, day), time.fromisoformat(clock), tzinfo=NY).astimezone(UTC)
+
+
+def _shift(page: DbPage, employee: int, day: int, start: str, end: str | None, *, month: int = 11) -> UUID:
+  first = page.db.punch(employee, "clock_in", _ny(day, start, month))
+  if end is not None:
+    page.db.punch(employee, "clock_out", _ny(day, end, month))
+  return first
+
+
+def _cards(page: DbPage) -> list[str]:
+  """The employee cards' markers, top to bottom."""
+  cards = sorted(page.user.find(marker="employee-card").elements, key=lambda e: e.id)
+  markers = [card._markers for card in cards]  # pyright: ignore[reportPrivateUsage]
+  return [next(m for m in found if m.startswith("employee-") and m != "employee-card") for found in markers]
+
+
+def _set(page: DbPage, marker: str, value: object) -> None:
+  assert page.user.client is not None
+  with page.user.client:
+    [select] = page.user.find(marker=marker).elements
+    assert isinstance(select, ui.select)
+    select.set_value(value)
+
+
+async def test_the_list_opens_on_this_week_sorted_by_last_name_with_week_totals(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  cy = db_page.db.employee("Cy", "Adams", "56")
+  _shift(db_page, cy, 2, "07:00", "15:30")
+  db_page.db.punch(cy, "break_start", _ny(2, "10:00"))
+  db_page.db.punch(cy, "break_end", _ny(2, "10:15"))
+  _shift(db_page, bob, 3, "08:00", "16:00")
+  await db_page.user.open("/")
+  await db_page.user.should_see("Nov 2 to 8, 2026")
+  assert _cards(db_page) == [f"employee-{cy}", f"employee-{bob}"]
+  await db_page.user.should_see("Cy Adams")
+  await db_page.user.should_see("ID 56")
+  await db_page.user.should_see(marker=f"week-total-{cy}", content="8:15")
+  await db_page.user.should_see(marker=f"week-total-{bob}", content="8:00")
+  await db_page.user.should_see("Mon, Nov 2")
+  await db_page.user.should_see("1 · 0:15")
+
+
+async def test_employees_with_no_shift_that_week_are_left_out(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  cy = db_page.db.employee("Cy", "Adams", "56")
+  _shift(db_page, bob, 27, "08:00", "16:00", month=10)
+  _shift(db_page, cy, 3, "08:00", "16:00")
+  await db_page.user.open("/")
+  await db_page.user.should_see("Cy Adams")
+  await db_page.user.should_not_see("Bob Lee")
+
+
+async def test_an_open_shift_shows_working_and_hours_so_far(db_page: DbPage) -> None:
+  _shift(db_page, db_page.db.employees[1], 5, "07:00", None)
+  await db_page.user.open("/")
+  await db_page.user.should_see("2:00 so far")
+  await db_page.user.should_see("working")
+  await db_page.user.should_see("Working now")
+
+
+async def test_a_stray_punch_gets_its_own_row(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  _shift(db_page, bob, 4, "07:00", "15:30")
+  stray = db_page.db.punch(bob, "clock_out", _ny(4, "17:02"))
+  await db_page.user.open("/")
+  await db_page.user.should_see(marker=f"row-{stray}")
+  await db_page.user.should_see("Clock out 5:02 PM")
+  await db_page.user.should_see("Stray punch")
+
+
+async def test_the_attention_bar_counts_and_filters(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  monday = _shift(db_page, bob, 2, "07:00", "15:00")
+  tuesday = _shift(db_page, bob, 3, "07:01", None)
+  db_page.db.punch(bob, "clock_in", _ny(3, "07:04"))
+  db_page.db.punch(bob, "clock_out", _ny(3, "15:33"))
+  wednesday = _shift(db_page, bob, 4, "07:58", None)
+  db_page.db.punch(bob, "clock_out", _ny(4, "23:00"), automatic=True)
+  await db_page.user.open("/")
+  await db_page.user.should_see("2 shifts need attention this week:")
+  await db_page.user.should_see("1 automatic clock-out")
+  await db_page.user.should_see("1 extra clock-in")
+  db_page.user.find(marker="attention-extra:clock_in").click()
+  await db_page.user.should_not_see(marker=f"row-{monday}")
+  await db_page.user.should_not_see(marker=f"row-{wednesday}")
+  await db_page.user.should_see(marker=f"row-{tuesday}")
+  db_page.user.find(marker="attention-only").click()
+  await db_page.user.should_see(marker=f"row-{wednesday}")
+  await db_page.user.should_see(marker=f"row-{tuesday}")
+  await db_page.user.should_not_see(marker=f"row-{monday}")
+
+
+async def test_filters_combine(db_page: DbPage) -> None:
+  warehouse = db_page.db.group("Warehouse")
+  bob = db_page.db.employees[1]
+  cy = db_page.db.employee("Cy", "Adams", "56", group_id=warehouse, role="manager")
+  dee = db_page.db.employee("Dee", "Moss", "78", group_id=warehouse)
+  for employee in (bob, cy, dee):
+    _shift(db_page, employee, 3, "08:00", "16:00")
+  await db_page.user.open("/")
+  await db_page.user.should_see("Bob Lee")
+  _set(db_page, "filter-group", warehouse)
+  await db_page.user.should_not_see("Bob Lee")
+  await db_page.user.should_see("Dee Moss")
+  _set(db_page, "filter-role", "manager")
+  await db_page.user.should_not_see("Dee Moss")
+  assert _cards(db_page) == [f"employee-{cy}"]
+  _set(db_page, "filter-role", None)
+  _set(db_page, "filter-employee", dee)
+  await db_page.user.should_not_see("Cy Adams")  # a refresh lands after the event
+  assert _cards(db_page) == [f"employee-{dee}"]
+
+
+async def test_your_own_shifts_are_locked(db_page: DbPage) -> None:
+  ann = db_page.db.employees[0]
+  _shift(db_page, ann, 2, "09:00", "17:30")
+  await db_page.user.open("/")
+  await db_page.user.should_see("You: another editor changes these")
+  await db_page.user.should_see(marker=f"own-{ann}")
+
+
+async def test_the_week_arrows_move_a_week(db_page: DbPage) -> None:
+  _shift(db_page, db_page.db.employees[1], 27, "08:00", "16:00", month=10)
+  await db_page.user.open("/")
+  await db_page.user.should_not_see("Bob Lee")
+  db_page.user.find(marker="week-back").click()
+  await db_page.user.should_see("Oct 26 to Nov 1, 2026")
+  await db_page.user.should_see("Bob Lee")
+  db_page.user.find(marker="this-week").click()
+  await db_page.user.should_see("Nov 2 to 8, 2026")
+  db_page.user.find(marker="week-next").click()
+  await db_page.user.should_see("Nov 9 to 15, 2026")
+
+
+async def test_an_overnight_shift_shows_in_both_weeks(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  start = db_page.db.punch(bob, "clock_in", _ny(8, "22:00"))
+  db_page.db.punch(bob, "clock_out", _ny(9, "06:00"))
+  db_page.clock.now = _ny(12, "12:00")
+  await sign_in(db_page, db_page.db.email)  # a week on, the fixture's sign-in has expired
+  await db_page.user.open("/?week=2026-11-04")
+  await db_page.user.should_see(marker=f"row-{start}")
+  await db_page.user.should_see(marker=f"week-total-{bob}", content="2:00")
+  db_page.user.find(marker="week-next").click()
+  await db_page.user.should_see("Nov 9 to 15, 2026")
+  await db_page.user.should_see(marker=f"row-{start}")
+  await db_page.user.should_see(marker=f"week-total-{bob}", content="6:00")
+
+
+async def test_technical_details_add_the_clock_and_punch_columns(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  _shift(db_page, bob, 3, "07:01", None)
+  db_page.db.punch(bob, "clock_in", _ny(3, "07:04"))
+  db_page.db.punch(bob, "clock_out", _ny(3, "15:33"))
+  await db_page.user.open("/")
+  await db_page.user.should_not_see("Punches")
+  db_page.user.find(marker="pref-technical").click()
+  await db_page.user.should_see("Technical details on")
+  await db_page.user.should_see("Punches")
+  await db_page.user.should_see("3 (1 ignored)")
+  await db_page.user.should_see(f"employee id {bob} · username 34 · group default (1) · role employee", retries=5)
+
+
+async def test_24_hour_time(db_page: DbPage) -> None:
+  _shift(db_page, db_page.db.employees[1], 3, "07:01", "15:33")
+  await db_page.user.open("/")
+  await db_page.user.should_see("3:33 PM")
+  db_page.user.find(marker="pref-h24").click()
+  await db_page.user.should_see("15:33")
+  await db_page.user.should_see("07:01")
+
+
+async def test_a_change_in_the_database_refreshes_the_open_list(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  _shift(db_page, bob, 2, "08:00", "16:00")
+  await db_page.user.open("/")
+  await db_page.user.should_see("Mon, Nov 2")
+  tuesday = _shift(db_page, bob, 3, "08:00", "16:00")
+  await db_page.user.should_see(marker=f"row-{tuesday}", retries=50)
+
+
+async def test_the_list_says_when_the_database_is_down(page: PageUnderTest) -> None:
+  await sign_in(page)
+  await page.user.should_see(text.DB_DOWN)

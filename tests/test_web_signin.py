@@ -23,12 +23,12 @@ IDLE = "Signed out after 30 minutes without activity; unsaved changes were disca
 async def test_every_page_needs_a_sign_in(page: PageUnderTest) -> None:
   await page.user.open("/")
   await page.user.should_see(SIGN_IN_BUTTON)
-  await page.user.should_not_see("Signed in as")
+  await page.user.should_not_see(marker="page-account")
 
 
 async def test_signing_in_with_a_listed_verified_email_opens_the_page(page: PageUnderTest) -> None:
   await sign_in(page)
-  await page.user.should_see("Signed in as ann@example.com")
+  await page.user.should_see(marker="page-account", content="ann@example.com")
 
 
 async def test_the_sign_in_asks_zoho_for_pkce_and_a_nonce(page: PageUnderTest) -> None:
@@ -47,7 +47,7 @@ async def test_the_sign_in_asks_zoho_for_pkce_and_a_nonce(page: PageUnderTest) -
 
 async def test_a_capitalized_email_signs_in_as_its_lowercase_badge(page: PageUnderTest) -> None:
   await sign_in(page, "Ann@Example.com")
-  await page.user.should_see("Signed in as ann@example.com")
+  await page.user.should_see(marker="page-account", content="ann@example.com")
 
 
 async def test_an_unlisted_email_is_refused(page: PageUnderTest) -> None:
@@ -131,7 +131,7 @@ async def test_a_failed_callback_leaves_a_valid_sign_in_alone(page: PageUnderTes
   reply = await page.user.http_client.get("/auth/zoho?code=c&state=used")  # Back into Zoho's page replays a used state
   assert reply.headers["location"] == "/"
   await page.user.open("/")
-  await page.user.should_see("Signed in as ann@example.com")
+  await page.user.should_see(marker="page-account", content="ann@example.com")
 
 
 async def test_a_callback_without_a_cookie_stores_nothing_on_the_server(page: PageUnderTest) -> None:
@@ -159,19 +159,19 @@ async def test_the_database_down_shows_a_plain_message(page: PageUnderTest) -> N
   assert (response.status_code, response.text) == (503, text.DB_DOWN)
   page.accounts.fail = None
   await page.user.open("/")
-  await page.user.should_see("Signed in as ann@example.com")
+  await page.user.should_see(marker="page-account", content="ann@example.com")
 
 
 async def test_a_signed_in_visit_to_the_sign_in_page_goes_home(page: PageUnderTest) -> None:
   await sign_in(page)
   await page.user.open("/signin")
-  await page.user.should_see("Signed in as ann@example.com")
+  await page.user.should_see(marker="page-account", content="ann@example.com")
 
 
 async def test_a_listed_email_needs_no_employee_number(page: PageUnderTest) -> None:
   page.accounts.accounts["ann@example.com"] = Account(None, developer=False)
   await sign_in(page)
-  await page.user.should_see("Signed in as ann@example.com")
+  await page.user.should_see(marker="page-account", content="ann@example.com")
 
 
 async def test_the_tab_icon_needs_no_sign_in(page: PageUnderTest) -> None:

@@ -120,6 +120,21 @@ class PagesDb:
     assert row is not None
     return row[0]
 
+  def employee(self, first: str, last: str, username: str, *, group_id: int = 1, role: str = "employee") -> int:
+    """Another employee in production, added by hand."""
+    with self.admin() as conn:
+      row = conn.execute(EMPLOYEE_SQL, (first, last, username)).fetchone()
+      assert row is not None
+      conn.execute("UPDATE employees SET group_id = %s, role = %s WHERE id = %s", (group_id, role, row[0]))
+    return row[0]
+
+  def group(self, name: str) -> int:
+    """A new group in production."""
+    with self.admin() as conn:
+      row = conn.execute("INSERT INTO groups (name) VALUES (%s) RETURNING id", (name,)).fetchone()
+    assert row is not None
+    return row[0]
+
   def correct(
     self,
     punch: UUID,
@@ -138,3 +153,10 @@ class PagesDb:
       ).fetchone()
     assert row is not None
     return row[0]
+
+
+@dataclass
+class DbPage(PageUnderTest):
+  """The page signed in as `db.email` (Ann Lee's account) over real databases, its clock at Thu 2026-11-05 9:00 AM EST."""
+
+  db: PagesDb

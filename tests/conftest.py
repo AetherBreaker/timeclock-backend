@@ -11,6 +11,7 @@ Stop it with `docker stop timeclock-backend-pg` (`--rm` deletes it).
 
 # Standard library imports
 import asyncio
+import contextlib
 import importlib
 import os
 import sys
@@ -33,7 +34,7 @@ import pytest
 from fake_zoho import FakeZoho
 from nicegui import app
 from nicegui.testing import user_simulation
-from page_sim import EMPLOYEE_SQL, FakeAccounts, FakeClock, PagesDb, PageUnderTest, page_settings
+from page_sim import EMPLOYEE_SQL, DbPage, FakeAccounts, FakeClock, PagesDb, PageUnderTest, page_settings, sign_in
 from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
 
@@ -150,3 +151,32 @@ async def pages_db(pg_server: str) -> AsyncIterator[PagesDb]:
     with psycopg.connect(pg_server, autocommit=True) as admin:
       for database in (prod, test):
         admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(database.name)))
+
+
+@pytest.fixture
+async def db_page(pages_db: PagesDb) -> AsyncIterator[DbPage]:
+  """The page over `pages_db`'s databases and allowlist, signed in through the fake Zoho, with live updates running."""
+  zoho = FakeZoho("page")
+  clock = FakeClock()
+  live = Live(pages_db.pools, quiet=0.05, retry=0.1)
+  listening = asyncio.create_task(live.run())
+  await asyncio.wait_for(asyncio.gather(live.listening[False].wait(), live.listening[True].wait()), 10)
+  page_sim.BUILD_ARGS.clear()
+  page_sim.BUILD_ARGS.update(
+    settings=page_settings(ZOHO_ACCOUNTS_URL=FakeZoho.ISSUER, ZOHO_CLIENT_ID="page", PAGE_PUBLIC_URL="http://test"),
+    accounts=pages_db.accounts,
+    pools=pages_db.pools,
+    live=live,
+    zoho_client_kwargs={"transport": zoho.transport},
+    now=clock,
+  )
+  try:
+    async with user_simulation(main_file=Path(__file__).with_name("page_main.py")) as user:
+      app.storage.general.clear()
+      page = DbPage(user, zoho, FakeAccounts(), clock, pages_db)
+      await sign_in(page, pages_db.email)
+      yield page
+  finally:
+    listening.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+      await listening
