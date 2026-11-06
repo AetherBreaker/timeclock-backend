@@ -9,7 +9,9 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 # Third party imports
+import page_sim
 from nicegui import app, ui
+from nicegui.client import Client
 from page_sim import page_settings
 from timeclock_schema.shifts import week_bounds
 
@@ -27,7 +29,7 @@ if TYPE_CHECKING:
 
   # Third party imports
   import pytest
-  from page_sim import DbPage, PagesDb
+  from page_sim import DbPage, PagesDb, PageUnderTest
   from psycopg import AsyncConnection
   from psycopg.rows import DictRow
 
@@ -345,3 +347,11 @@ async def test_an_added_shift_then_opens_in_the_editor(db_page: DbPage, monkeypa
   await asyncio.wait_for(answered.wait(), 10)
   await db_page.user.should_see("Wednesday, November 4, 2026")
   await db_page.user.should_not_see("Add a shift")
+
+
+async def test_only_the_shift_editor_outlives_a_dropped_connection(page: PageUnderTest) -> None:
+  # By path, the latest registration of each: every test's build registers the pages again.
+  timeouts = {p.path: p.reconnect_timeout for p in Client.page_routes.pages.values()}
+  assert timeouts["/shift"] == timeouts["/shift/new"] == page_sim.BUILD_ARGS["settings"].idle_minutes * 60
+  assert timeouts["/"] is None
+  assert timeouts["/signin"] is None

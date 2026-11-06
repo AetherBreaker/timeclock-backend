@@ -259,13 +259,18 @@ def build(  # noqa: C901, PLR0915 - one linear registration of every route and p
     frame(signin, settings, gate)
     await draw_shift_list(signin, settings=settings, pools=pools, gate=gate, live=live, now=now, query=request.query_params)
 
-  @ui.page("/shift", title=settings.page_name)
+  # The shift editor's page outlives a dropped connection as long as the sign-in would (spec §6.2), so it carries on
+  # without a reload. Per page: the socket's heartbeat follows the global timeout, so a long global one would hide a dead
+  # connection for half an hour, and keep every page left behind reading on each live update.
+  outlives = settings.idle_minutes * 60
+
+  @ui.page("/shift", title=settings.page_name, reconnect_timeout=outlives)
   async def shift_page(request: Request) -> None:
     signin: SignIn = request.state.signin
     frame(signin, settings, gate)
     await draw_shift_editor(signin, settings=settings, pools=pools, gate=gate, live=live, now=now, query=request.query_params)
 
-  @ui.page("/shift/new", title=settings.page_name)
+  @ui.page("/shift/new", title=settings.page_name, reconnect_timeout=outlives)
   async def add_shift_page(request: Request) -> None:
     signin: SignIn = request.state.signin
     frame(signin, settings, gate)
@@ -342,8 +347,6 @@ def serve() -> None:
     dark=True,
     reload=False,
     show=False,
-    # An editor's page outlives a dropped connection this long, its draft with it (spec §6.2); the gate ends it anyway.
-    reconnect_timeout=settings.idle_minutes * 60,
     storage_secret=settings.session_secret.get_secret_value(),
     # `__Host-`: no sibling subdomain can set it (session fixation). `lax` still sends it on Zoho's redirect back. It
     # carries the browser's storage id (preferences, why a sign-in ended) and is re-sent only when changed, so it lasts
