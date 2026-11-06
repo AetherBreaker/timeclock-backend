@@ -9,6 +9,7 @@ back. A save writes only the changed columns; the database logs each (0016) and 
 import asyncio
 import logging
 import re
+import secrets
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import bcrypt
 import psycopg
 from nicegui import app, context, ui
+from pydantic import SecretStr
 from timeclock_schema.models import EMAIL_PATTERN
 
 # Local folder imports
@@ -23,7 +25,16 @@ from . import text
 from .db import DatabaseChangedError, editor_transaction
 from .gate import SignedOutError
 from .shell import prefs
-from .store import EDITABLE, LOCKED_FOR_SELF, employee_row, load_context, load_employee_history, load_fingerprints, save_employee
+from .store import (
+  EDITABLE,
+  LOCKED_FOR_SELF,
+  employee_row,
+  load_context,
+  load_employee_history,
+  load_fingerprints,
+  save_employee,
+  set_pin,
+)
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -34,7 +45,6 @@ if TYPE_CHECKING:
   # Third party imports
   from psycopg import AsyncConnection
   from psycopg.rows import DictRow
-  from pydantic import SecretStr
 
   # Local folder imports
   from .db import Pools
@@ -444,6 +454,69 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
         message = ("orange", text.EMPLOYEE_CHANGED) if take(fresh) else ("red", text.EMPLOYEE_GONE)
       redraw()
 
+  def open_pin() -> None:
+    pin_title.set_text(f"Set a new PIN for {base['first_name']} {base['last_name']} (ID {ctx.people[employee].username})")
+    pin_dialog.open()
+
+  def reset_pin() -> None:  # on closing, so a made-up PIN isn't shown again
+    new_pin.set_value("")
+    new_pin_again.set_value("")
+    pin_error.set_text("")
+    typed_pins.set_visibility(True)
+    made_box.set_visibility(False)
+
+  def make_pin() -> None:
+    pin = f"{secrets.randbelow(10_000):04d}"
+    new_pin.set_value(pin)
+    new_pin_again.set_value(pin)
+    made.set_text(f"Made up for you: {pin}")
+    give.set_text(f"Give this to {base['first_name']}. It won't be shown again once you close this.")
+    pin_error.set_text("")
+    typed_pins.set_visibility(False)
+    made_box.set_visibility(True)
+
+  async def save_pin() -> None:
+    # Saved at once and on its own, so a PIN never sits in a draft (spec §9); the draft stays as it is.
+    typed = new_pin.value or ""
+    if not (typed.isascii() and typed.isdecimal()):  # the clock's check_new_pin
+      pin_error.set_text(text.PIN_DIGITS_ONLY)
+      return
+    if typed != (new_pin_again.value or ""):
+      pin_error.set_text(text.PIN_MISMATCH)
+      return
+    pin_save.disable()
+    pin_hash = await asyncio.to_thread(hash_pin, SecretStr(typed))  # bcrypt is slow on purpose; the page isn't
+    async with busy:
+      try:
+        async with editor_transaction(pools, gate, storage, session, test_database=signin.test_database) as conn:
+          await set_pin(conn, employee_id=employee, pin_hash=pin_hash)
+          fresh = await _read(conn, employee, default_tz=settings.tz)  # for its "PIN changed"
+      except SignedOutError:
+        ui.navigate.to("/signin")
+        return
+      except DatabaseChangedError:
+        ui.navigate.reload()
+        return
+      except LookupError:
+        failed = text.EMPLOYEE_GONE
+      except psycopg.OperationalError:
+        logger.warning("a PIN couldn't reach the database", exc_info=True)
+        failed = text.DB_DOWN
+      except psycopg.Error:  # one the database refused, such as pin_hash's constraint: a page bug
+        logger.exception("a PIN save failed")
+        failed = text.PIN_SAVE_FAILED
+      else:
+        failed = None
+        take(fresh)
+        redraw()
+      finally:
+        pin_save.enable()
+    if failed is not None:
+      pin_error.set_text(failed)
+      return
+    pin_dialog.close()
+    pin_note.set_text("PIN set.")
+
   async def woken() -> None:
     nonlocal message
     with client:
@@ -511,6 +584,13 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
           notes("active")
           switched_off()
         with ui.element("div").classes("card"):
+          ui.label("PIN").classes("h4")
+          with ui.row().classes("lockrow"):
+            with ui.button(on_click=open_pin).props("outline no-caps").classes("btn outline").mark("set-pin"):
+              ui.element("span").classes("page-icon icon-password")
+              ui.label("Set a new PIN...")
+            pin_note = ui.label("Saved straight away, on its own.").classes("small muted")
+        with ui.element("div").classes("card"):
           ui.label("History").classes("h4")
           past()
       with ui.element("div").classes("ed-side"), ui.element("div").classes("card"):
@@ -525,5 +605,27 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
       ui.button("Cancel", on_click=confirm.close).props("flat no-caps")
       confirm_save = ui.button("Save", on_click=partial(save, sure=True)).mark("confirm-save")
       confirm_save.props("unelevated no-caps color=primary text-color=black")
+
+  with ui.dialog() as pin_dialog, ui.card().classes("dlg offline-inert pin-dlg"):
+    pin_title = ui.label().classes("dlg-title")
+    with ui.column().classes("w-full") as typed_pins:
+      with ui.row().classes("pins"):
+        typing = "outlined dense stack-label inputmode=numeric autocomplete=new-password"
+        new_pin = ui.input("New PIN", password=True).props(typing).classes("grow").mark("new-pin")
+        new_pin_again = ui.input("Type it again", password=True).props(typing).classes("grow").mark("new-pin-again")
+      with ui.button(on_click=make_pin).props("flat dense no-caps").classes("btn text").mark("make-pin"):
+        ui.element("span").classes("page-icon icon-casino")
+        ui.label("Make one up for me")
+    with ui.column().classes("gen") as made_box:
+      made = ui.label().classes("made").mark("made-pin")
+      give = ui.label()
+    made_box.set_visibility(False)
+    ui.label(text.PIN_NOTE).classes("small muted")
+    pin_error = ui.label().classes("pin-error small")
+    with ui.row().classes("saverow"):
+      ui.button("Cancel", on_click=pin_dialog.close).props("outline no-caps").classes("btn outline")
+      pin_save = ui.button("Set PIN", on_click=save_pin).mark("set-pin-save")
+      pin_save.props("unelevated no-caps color=primary text-color=black")
+  pin_dialog.on_value_change(lambda e: None if e.value else reset_pin())
 
   client.on_delete(live.subscribe(test=signin.test_database, callback=woken))

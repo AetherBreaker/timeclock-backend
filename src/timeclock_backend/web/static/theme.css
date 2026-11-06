@@ -240,6 +240,14 @@ body.test-database {
   content: "fingerprint";
 }
 
+.icon-password::before {
+  content: "password";
+}
+
+.icon-casino::before {
+  content: "casino";
+}
+
 .icon-warning::before {
   content: "warning";
   font-size: 20px;
@@ -746,6 +754,31 @@ table.sh td .chip {
   font-size: 13px;
 }
 
+.pin-dlg {
+  gap: 10px;
+}
+
+.pin-dlg .pins {
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.pin-dlg .gen {
+  gap: 2px;
+  padding: 10px 12px;
+  background: var(--callout-blue-bg);
+  border-radius: 6px;
+  line-height: 1.5;
+}
+
+.pin-dlg .gen .made {
+  font-weight: 700;
+}
+
+.pin-dlg .pin-error {
+  color: var(--chip-red);
+}
+
 .employee-editor .offline-note {
   display: none;
   color: var(--chip-orange);
@@ -1219,7 +1252,8 @@ textarea.note {
   box-shadow: 0 6px 24px var(--shadow);
 }
 
-.dlg h3 {
+.dlg h3,
+.dlg .dlg-title {
   margin: 0 0 8px;
   font-size: 16px;
   font-weight: 700;

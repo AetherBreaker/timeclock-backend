@@ -1,11 +1,13 @@
 """Tests for the employee editor (spec 2026-11-05 §9, §11; mockup screens K to M), over real databases."""
 
 # Standard library imports
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 # Third party imports
+import bcrypt
 from nicegui import ui
 from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
@@ -230,3 +232,82 @@ async def test_a_save_that_lost_a_race_marks_the_field(db_page: DbPage, monkeypa
   await db_page.user.should_see(text.EMPLOYEE_CHANGED)
   await db_page.user.should_see(marker="theirs-phone")
   assert _row(db_page, bob, "phone") == ("+15555550199",)
+
+
+def _pin_hash(page: DbPage, employee: int) -> str:
+  (stored,) = _row(page, employee, "pin_hash")
+  return stored
+
+
+async def _set_pin(page: DbPage, first: str, again: str) -> None:
+  page.user.find(marker="set-pin").click()
+  page.user.find(marker="new-pin").type(first)
+  page.user.find(marker="new-pin-again").type(again)
+  page.user.find(marker="set-pin-save").click()
+
+
+async def test_setting_a_pin_saves_it_at_once_and_logs_pin_changed(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  await db_page.user.open(f"/employee?id={bob}")
+  db_page.user.find(marker="field-first_name").clear().type("Robert")
+  await db_page.user.should_see("First name: Bob to Robert")
+  await _set_pin(db_page, "4827", "4827")
+  await db_page.user.should_see("PIN set.", retries=50)  # bcrypt takes a moment
+  stored = _pin_hash(db_page, bob)
+  assert stored.startswith("$2a$")
+  assert bcrypt.checkpw(b"4827", stored.encode())
+  await db_page.user.should_see(marker="history-line", content="PIN changed")
+  await db_page.user.should_see("First name: Bob to Robert")  # the draft stays a draft
+  assert _row(db_page, bob, "first_name") == ("Bob",)
+
+
+async def test_mismatched_pins_are_refused(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  before = _pin_hash(db_page, bob)
+  await db_page.user.open(f"/employee?id={bob}")
+  await _set_pin(db_page, "4827", "4828")
+  await db_page.user.should_see(text.PIN_MISMATCH)
+  assert _pin_hash(db_page, bob) == before
+
+
+async def test_a_pin_keeps_its_leading_zero(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  await db_page.user.open(f"/employee?id={bob}")
+  await _set_pin(db_page, "0123", "0123")
+  await db_page.user.should_see("PIN set.", retries=50)  # bcrypt takes a moment
+  assert bcrypt.checkpw(b"0123", _pin_hash(db_page, bob).encode())
+
+
+async def test_a_pin_of_other_digits_is_refused(db_page: DbPage) -> None:
+  # Arabic-Indic digits pass str.isdecimal() but no clock keypad can type them.
+  bob = db_page.db.employees[1]
+  before = _pin_hash(db_page, bob)
+  await db_page.user.open(f"/employee?id={bob}")
+  await _set_pin(db_page, "\u0661\u0662\u0663\u0664", "\u0661\u0662\u0663\u0664")
+  await db_page.user.should_see(text.PIN_DIGITS_ONLY)
+  assert _pin_hash(db_page, bob) == before
+
+
+async def test_make_one_up_shows_four_digits_once(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  await db_page.user.open(f"/employee?id={bob}")
+  db_page.user.find(marker="set-pin").click()
+  db_page.user.find(marker="make-pin").click()
+  await db_page.user.should_see("Give this to Bob. It won't be shown again once you close this.")
+  made = re.fullmatch(r"Made up for you: (\d{4})", _widget(db_page, "made-pin").text)
+  assert made is not None
+  pin = made[1]
+  db_page.user.find(marker="set-pin-save").click()
+  await db_page.user.should_see("PIN set.", retries=50)  # bcrypt takes a moment
+  assert bcrypt.checkpw(pin.encode(), _pin_hash(db_page, bob).encode())  # both fields held it, or it would be refused
+  db_page.user.find(marker="set-pin").click()
+  await db_page.user.should_not_see(marker="made-pin")
+  assert _widget(db_page, "new-pin").value == ""
+
+
+async def test_you_can_set_your_own_pin(db_page: DbPage) -> None:
+  ann = db_page.db.employees[0]  # the signed-in account's
+  await db_page.user.open(f"/employee?id={ann}")
+  await _set_pin(db_page, "2468", "2468")
+  await db_page.user.should_see("PIN set.", retries=50)  # bcrypt takes a moment
+  assert bcrypt.checkpw(b"2468", _pin_hash(db_page, ann).encode())
