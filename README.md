@@ -26,7 +26,7 @@ The compose service `timeclock-web` runs the shift corrections page from the sam
 | `PAGE_SESSION_SECRET` | 64 random characters; signs the browser sessions |
 | `TIMECLOCK_WEB_PASSWORD` | 48 random characters; the `timeclock_web` login's password |
 | `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET` | Zoho sign-in: the page's Server-based Application in Zoho's API console |
-| `PAGE_TEST_ACCOUNTS` | Test sign-in: a JSON object of email to password (16 characters or more), e.g. `{"name@example.com": "..."}`; empty turns it off. Mark it literal in Coolify |
+| `PAGE_TEST_ACCOUNTS` | Test sign-in: a JSON object of email to password (16 random characters or more), e.g. `{"name@example.com": "..."}`; empty turns it off. Mark it literal in Coolify |
 
 The page refuses to start without the first three and at least one sign-in method (both Zoho variables, `PAGE_TEST_ACCOUNTS`, or both); the other services deploy regardless. Setup, once:
 

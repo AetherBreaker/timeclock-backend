@@ -3,6 +3,7 @@
 # Standard library imports
 import asyncio
 import json
+from http import HTTPStatus
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -82,3 +83,15 @@ async def test_a_failed_test_sign_in_stores_nothing_on_the_server(page: PageUnde
     assert (await _post(page, "ann@example.com", "wrong-horse-battery")).headers["location"] == "/signin"
   await asyncio.gather(*background_tasks.lazy_tasks_running.values())  # NiceGUI's storage file writes
   assert set(app.storage.path.glob("storage-user-*.json")) == before
+
+
+async def test_an_oversized_test_sign_in_is_refused(page: PageUnderTest) -> None:
+  reply = await _post(page, "ann@example.com", PASSWORD + "x" * 8192)
+  assert reply.status_code == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+  assert (await page.user.http_client.get("/")).headers["location"] == "/signin"
+
+
+async def test_only_a_browser_form_counts_as_a_test_sign_in(page: PageUnderTest) -> None:
+  # Multipart: Starlette's parser would spool files to disk and decode with whatever charset the request names.
+  reply = await page.user.http_client.post("/signin/test", files={"email": (None, "ann@example.com"), "password": (None, PASSWORD)})
+  assert reply.headers["location"] == "/signin"

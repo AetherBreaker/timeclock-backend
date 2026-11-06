@@ -6,6 +6,7 @@ import json
 # Third party imports
 import pytest
 from page_sim import page_settings
+from pydantic import SecretStr
 
 # First party imports
 from timeclock_backend.web import text
@@ -37,13 +38,18 @@ def test_the_test_sign_in_is_off_without_accounts() -> None:
 
 def test_test_accounts_are_kept_by_lowercase_email() -> None:
   accounts = json.dumps({" Ann@Example.com ": "p" * 16})
-  assert page_settings(PAGE_TEST_ACCOUNTS=accounts).test_logins() == {"ann@example.com": "p" * 16}
+  assert page_settings(PAGE_TEST_ACCOUNTS=accounts).test_logins() == {"ann@example.com": SecretStr("p" * 16)}
 
 
 @pytest.mark.parametrize(
   "raw",
-  ['{"ann@example.com": "short-secret"', '["ann@example.com", "short-secret"]', '{"ann@example.com": "short-secret"}'],
-  ids=["not-json", "not-an-object", "short-password"],
+  [
+    '{"ann@example.com": "short-secret"',
+    '["ann@example.com", "short-secret"]',
+    '{"ann@example.com": "short-secret"}',
+    '{"short-secret-swapped": "ann@example.com"}',
+  ],
+  ids=["not-json", "not-an-object", "short-password", "swapped"],
 )
 def test_bad_test_accounts_are_refused_without_quoting_them(raw: str) -> None:
   with pytest.raises(ValueError, match="PAGE_TEST_ACCOUNTS") as raised:
@@ -59,3 +65,9 @@ def test_a_short_test_password_names_its_account() -> None:
 def test_the_wrong_password_message() -> None:
   assert text.ended(EndReason.WRONG_PASSWORD, page_settings()) == text.WRONG_PASSWORD
   assert text.WRONG_PASSWORD == "That email and password don't match a test account."
+
+
+def test_test_accounts_that_collide_once_lowercased_are_refused() -> None:
+  accounts = json.dumps({"Ann@example.com": "p" * 16, "ann@example.com": "q" * 16})
+  with pytest.raises(ValueError, match=r"ann@example\.com"):
+    page_settings(PAGE_TEST_ACCOUNTS=accounts).test_logins()

@@ -96,3 +96,37 @@ def test_serve_refuses_half_of_zoho_beside_the_test_sign_in(monkeypatch: pytest.
 def test_serve_refuses_bad_test_accounts(monkeypatch: pytest.MonkeyPatch) -> None:
   with pytest.raises(ValueError, match="PAGE_TEST_ACCOUNTS"):
     _serve(monkeypatch, **_COMPLETE, PAGE_TEST_ACCOUNTS='{"ann@example.com": "short"}')
+
+
+def _alert_text(exc: BaseException) -> str:
+  """What aeth_ext's crash alert shows (`show_locals=True`): the message and each of the page's own frames' locals."""
+  parts, tb = [str(exc)], exc.__traceback__
+  while tb is not None:
+    if "timeclock_backend" in tb.tb_frame.f_code.co_filename:
+      parts.append(repr(tb.tb_frame.f_locals))
+    tb = tb.tb_next
+  return "\n".join(parts)
+
+
+_SECRETS = ("s" * 64, "p" * 48, "zoho-secret", "test-password-0123", "test-pw-short")
+
+
+@pytest.mark.parametrize(
+  "values",
+  [
+    {
+      **{k: v for k, v in _COMPLETE.items() if k != "PAGE_PUBLIC_URL"},
+      "PAGE_TEST_ACCOUNTS": json.dumps({"a@b.co": "test-password-0123"}),
+    },
+    {**_COMPLETE, "PAGE_TEST_ACCOUNTS": json.dumps({"ann@example.com": "test-pw-short"})},
+    {**_COMPLETE, "PAGE_TEST_ACCOUNTS": json.dumps({"test-password-0123": "ann@example.com"})},
+    {**_COMPLETE, "PAGE_TEST_ACCOUNTS": '["ann@example.com", "test-password-0123"]'},
+    {**_COMPLETE, "PAGE_TEST_ACCOUNTS": '{"ann@example.com": "test-password-0123"'},
+  ],
+  ids=["no-public-url", "short-password", "swapped", "a-list", "not-json"],
+)
+def test_a_refused_start_keeps_every_secret_out_of_the_crash_alert(monkeypatch: pytest.MonkeyPatch, values: dict[str, str]) -> None:
+  with pytest.raises(ValueError) as raised:
+    _serve(monkeypatch, **values)
+  alert = _alert_text(raised.value)
+  assert [secret for secret in _SECRETS if secret in alert] == []
