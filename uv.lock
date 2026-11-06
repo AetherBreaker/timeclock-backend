@@ -1670,7 +1670,7 @@ requires-dist = [
     { name = "nicegui", specifier = ">=3.18,<4" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.10" },
     { name = "psycopg-pool", specifier = ">=3.3.3" },
-    { name = "timeclock-schema", specifier = ">=0.10.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "timeclock-schema", specifier = ">=0.11.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "tzdata", specifier = ">=2026.5" },
 ]
 
@@ -1693,14 +1693,14 @@ dev = [
 
 [[package]]
 name = "timeclock-schema"
-version = "0.10.0"
+version = "0.11.0"
 source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/52d/8b25730095a1f/timeclock_schema-0.10.0.tar.gz", hash = "sha256:52d8b25730095a1f3fc67f5b08e24e21ca1e4cea5f5fead377fe18f75756fb3c" }
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/979/7cdb4a3cf70b6/timeclock_schema-0.11.0.tar.gz", hash = "sha256:9797cdb4a3cf70b62c9ddbc68eafa633e558d4b8f6b69cb903b97bfb0bb6b100" }
 wheels = [
-    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/062/d23aaa570ae7c/timeclock_schema-0.10.0-py3-none-any.whl", hash = "sha256:062d23aaa570ae7c1ed0f1bdb6ea20d476a8bc267feedb3fcc5f190bd187b858" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/cb1/7a240da1b4fc1/timeclock_schema-0.11.0-py3-none-any.whl", hash = "sha256:cb17a240da1b4fc1b46aaedd319db598057670f01722f658574a21a40aa02a2d" },
 ]
 
 [[package]]
