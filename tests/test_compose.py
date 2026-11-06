@@ -142,3 +142,9 @@ def test_a_missing_page_variable_holds_back_only_the_page() -> None:
     m for name, s in SERVICES.items() if name != "timeclock-web" for m in re.findall(r"\$\{(\w+)", "\n".join(s["environment"]))
   }
   assert required <= others
+
+
+def test_the_page_gets_each_of_its_variables_from_coolify() -> None:
+  names = ("PAGE_PUBLIC_URL", "PAGE_SESSION_SECRET", "TIMECLOCK_WEB_PASSWORD", "ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET", "PAGE_TEST_ACCOUNTS")
+  environment = _environment("timeclock-web")
+  assert {name: environment.get(name) for name in names} == {name: f"${{{name}:-}}" for name in names}

@@ -2,6 +2,7 @@
 
 # Standard library imports
 import importlib
+import json
 import types
 from importlib.metadata import entry_points
 from typing import TYPE_CHECKING, Any
@@ -22,6 +23,8 @@ _COMPLETE = {
   "ZOHO_CLIENT_ID": "page",
   "ZOHO_CLIENT_SECRET": "zoho-secret",
 }
+_WITHOUT_ZOHO = {name: value for name, value in _COMPLETE.items() if not name.startswith("ZOHO_")}
+_TEST_ACCOUNTS = json.dumps({"ann@example.com": "p" * 16})
 
 
 def _serve(monkeypatch: pytest.MonkeyPatch, **values: str) -> dict[str, Any]:
@@ -73,3 +76,23 @@ def test_serve_runs_nicegui_with_secure_session_cookies(monkeypatch: pytest.Monk
 def test_serve_creates_the_heartbeat_folder(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
   _serve(monkeypatch, **_COMPLETE, PERSISTED_DIR_LOC=str(tmp_path))  # a fresh volume: socket logging creates no logs folder
   assert (tmp_path / "logs").is_dir()  # the healthcheck reads logs/heartbeat.txt
+
+
+def test_serve_runs_with_only_the_test_sign_in(monkeypatch: pytest.MonkeyPatch) -> None:
+  assert _serve(monkeypatch, **_WITHOUT_ZOHO, PAGE_TEST_ACCOUNTS=_TEST_ACCOUNTS)["run"] is not None
+
+
+def test_serve_refuses_without_a_sign_in_method(monkeypatch: pytest.MonkeyPatch) -> None:
+  with pytest.raises(ValueError, match="PAGE_TEST_ACCOUNTS"):
+    _serve(monkeypatch, **_WITHOUT_ZOHO)
+
+
+def test_serve_refuses_half_of_zoho_beside_the_test_sign_in(monkeypatch: pytest.MonkeyPatch) -> None:
+  values = {name: value for name, value in _COMPLETE.items() if name != "ZOHO_CLIENT_SECRET"}
+  with pytest.raises(ValueError, match="ZOHO_CLIENT_SECRET"):
+    _serve(monkeypatch, **values, PAGE_TEST_ACCOUNTS=_TEST_ACCOUNTS)
+
+
+def test_serve_refuses_bad_test_accounts(monkeypatch: pytest.MonkeyPatch) -> None:
+  with pytest.raises(ValueError, match="PAGE_TEST_ACCOUNTS"):
+    _serve(monkeypatch, **_COMPLETE, PAGE_TEST_ACCOUNTS='{"ann@example.com": "short"}')

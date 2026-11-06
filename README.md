@@ -18,20 +18,22 @@ Coolify reaches the clocks themselves through [coolify-tunnel](https://github.co
 
 ## Shift corrections page
 
-The compose service `timeclock-web` runs the shift corrections page from the same image (`timeclock-web` console script, NiceGUI on port 8080, behind Coolify's proxy). Managers sign in with Zoho; only a verified email listed in `backend.editors` on `timeclock` gets in, and every page load and save checks the sign-in again. The page's PostgreSQL login, `timeclock_web`, has no password until the owner sets one, and the sidecar refuses it from anywhere but the page's address on the private `timeclock-web-db` network (`10.240.17.0/28`).
+The compose service `timeclock-web` runs the shift corrections page from the same image (`timeclock-web` console script, NiceGUI on port 8080, behind Coolify's proxy). Managers sign in with Zoho, or with an email and password from `PAGE_TEST_ACCOUNTS` while testing; either way only an email listed in `backend.editors` on `timeclock` gets in, and every page load and save checks the sign-in again. The page's PostgreSQL login, `timeclock_web`, has no password until the owner sets one, and the sidecar refuses it from anywhere but the page's address on the private `timeclock-web-db` network (`10.240.17.0/28`).
 
 | Variable | Meaning |
 | --- | --- |
 | `PAGE_PUBLIC_URL` | The page's address, e.g. `https://corrections.example.com`; Zoho redirects back to `<it>/auth/zoho` |
-| `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET` | The page's Server-based Application in Zoho's API console |
 | `PAGE_SESSION_SECRET` | 64 random characters; signs the browser sessions |
 | `TIMECLOCK_WEB_PASSWORD` | 48 random characters; the `timeclock_web` login's password |
+| `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET` | Zoho sign-in: the page's Server-based Application in Zoho's API console |
+| `PAGE_TEST_ACCOUNTS` | Test sign-in: a JSON object of email to password (16 characters or more), e.g. `{"name@example.com": "..."}`; empty turns it off. Mark it literal in Coolify |
 
-All five are required by the page alone: it refuses to start without them, and the other services deploy regardless. Setup, once:
+The page refuses to start without the first three and at least one sign-in method (both Zoho variables, `PAGE_TEST_ACCOUNTS`, or both); the other services deploy regardless. Setup, once:
 
-1. In Coolify, give `timeclock-web` its domain on port 8080, and register that domain in Zoho's API console with the redirect URI `https://<domain>/auth/zoho`.
+1. In Coolify, give `timeclock-web` its domain on port 8080 (`https://<domain>:8080` in the service's Domains field). For Zoho, register that domain in Zoho's API console with the redirect URI `https://<domain>/auth/zoho`.
 2. Set the variables above, then deploy.
-3. In the SQL editor, as `postgres` on `timeclock`: `ALTER ROLE timeclock_web PASSWORD '<TIMECLOCK_WEB_PASSWORD>'`, then add each manager: `INSERT INTO backend.editors (email, employee_id, developer) VALUES (...)`.
+3. In the SQL editor, as `postgres` on `timeclock`: `ALTER ROLE timeclock_web PASSWORD '<TIMECLOCK_WEB_PASSWORD>'`.
+4. Add each manager there too: `INSERT INTO backend.editors (email, employee_id, developer) VALUES ('name@example.com', 123, false)`. The email is lowercase (the page lowercases what it's given). `employee_id` is their own employee number, which blocks edits to their own punches, or `NULL` for none. `developer` true lets them switch the page to the test database. The row creates their database role; deleting it cuts off an open sign-in at once.
 
 ## Coolify environment
 

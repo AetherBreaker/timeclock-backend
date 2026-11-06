@@ -79,14 +79,22 @@ async def fresh_database(pg_server: str):
 
 
 @pytest.fixture
-async def page() -> AsyncIterator[PageUnderTest]:
+def page_values() -> dict[str, str]:
+  """More page variables for `page`, over its own; a test module or test overrides this."""
+  return {}
+
+
+@pytest.fixture
+async def page(page_values: dict[str, str]) -> AsyncIterator[PageUnderTest]:
   """The page against a fake Zoho and a fake allowlist: ann@example.com (employee 7) and the developer dev@example.com."""
   zoho = FakeZoho("page")
   accounts = FakeAccounts({"ann@example.com": Account(7, developer=False), "dev@example.com": Account(None, developer=True)})
   clock = FakeClock()
   page_sim.BUILD_ARGS.clear()
   page_sim.BUILD_ARGS.update(
-    settings=page_settings(ZOHO_ACCOUNTS_URL=FakeZoho.ISSUER, ZOHO_CLIENT_ID="page", PAGE_PUBLIC_URL="http://test"),
+    settings=page_settings(
+      **{"ZOHO_ACCOUNTS_URL": FakeZoho.ISSUER, "ZOHO_CLIENT_ID": "page", "PAGE_PUBLIC_URL": "http://test", **page_values}
+    ),
     accounts=accounts,
     zoho_client_kwargs={"transport": zoho.transport},
     now=clock,
