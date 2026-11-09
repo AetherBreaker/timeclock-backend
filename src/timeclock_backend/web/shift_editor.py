@@ -9,7 +9,7 @@ in Python decide, and their numbers are the ones written (§6.9).
 import logging
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode
 from uuid import UUID
 
 # Third party imports
@@ -84,15 +84,7 @@ class ShiftEditor(ui.element, component="editor/shift_editor.js", esm={"shift-ed
     self.update()
 
   def send_result(self, result: dict[str, Any]) -> None:
-    """The answer to a `save`.
-
-    A saved base and history are kept here unsent: the component takes them from the answer, and a props push would
-    rebase its new draft onto that base a second time, out of order with the answer.
-    """
-    if "ok" in result:
-      with self._props.suspend_updates():
-        self._props["base"] = result["base"]
-        self._props["history"] = result["history"]
+    """The answer to a `save`; on ok the component then goes back to the list, so nothing of it is kept here."""
     self.run_method("saveResult", result)
 
 
@@ -327,9 +319,12 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
   except ValueError:
     punch_id = day = None
   body = ui.column().classes("page-body shift-editor")
+  # The list as it was left (its rows and Add shift pass their query as `back`), where the crumb and a save go back to;
+  # without one, the shift's week.
+  listed = None if "back" not in query else f"/?{q}" if (q := urlencode(parse_qsl(query["back"]))) else "/"
 
   def crumb(week_start: date | None) -> None:
-    back = "/" if week_start is None else f"/?{urlencode({'week': week_start.isoformat()})}"
+    back = listed or ("/" if week_start is None else f"/?{urlencode({'week': week_start.isoformat()})}")
     with ui.link(target=back).classes("crumb").mark("crumb"):
       ui.element("span").classes("page-icon icon-arrow-back")
       ui.label("Shifts")
@@ -393,7 +388,7 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
       }
 
       def pick(**changed: object) -> None:
-        wanted = {"employee": employee, "date": None if day is None else day.isoformat()} | changed
+        wanted = {"employee": employee, "date": None if day is None else day.isoformat(), "back": query.get("back")} | changed
         ui.navigate.to(f"/shift/new?{urlencode({k: v for k, v in wanted.items() if v is not None})}")
 
       with ui.row().classes("ctl"):
@@ -416,6 +411,9 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
   database = "test" if signin.test_database else "production"
   stored_as = f"timeclock-draft:{signin.email}:{database}:{employee}:"
   key = None if entry is None else entry.key  # the address's punch, and the stored draft's name
+  back = listed or f"/?{urlencode({'week': week[0].astimezone(tz).date().isoformat()})}"
+  shown_day = day if entry is None else entry.start.astimezone(tz).date()
+  assert shown_day is not None  # add mode returned above without a day
   with body:
     if entry is not None:
       crumb(week[0].astimezone(tz).date())
@@ -445,25 +443,20 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
         "contact": settings.fault_contact,
         "storageKey": f"{stored_as}{f'new:{day}' if key is None else key}",
         "add": add,
-        "back": f"/?{urlencode({'week': week[0].astimezone(tz).date().isoformat()})}",
+        "back": back,
       },
     )
   token = editor.props["base"]["token"]
 
-  async def save(e: GenericEventArguments) -> None:  # noqa: C901, PLR0912 - one save's answers, then what each redraws
-    nonlocal token, key
+  async def save(e: GenericEventArguments) -> None:
+    nonlocal token
     payload = e.args if isinstance(e.args, dict) else e.args[0]
     result: dict[str, Any]
-    fresh: list[PagePunch] = []
     try:
       async with editor_transaction(pools, gate, storage, session, test_database=signin.test_database) as conn:
         result = await save_shift(
           conn, signin=signin, employee_id=person.id, week=week, payload=payload, now=now(), settings=settings, h24=h24
         )
-        if "ok" in result:  # read in the save's transaction, so they hold the save
-          fresh = (await load_punches(conn, start=week[0], end=None, employee_id=person.id)).get(person.id, [])
-          items = [] if span is None else await load_history(conn, employee_id=person.id, start=span[0], end=span[1])
-          result["history"] = history_json(items, tz, h24=h24)
     except SignedOutError:
       result = {"signedOut": True}
     except DatabaseChangedError:
@@ -479,25 +472,10 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
       raise
     if "ok" in result:
       token = result["base"]["token"]
+      storage["saved"] = f"Saved: {person.name}, {text.day_label(shown_day)}."  # said by the list it goes back to
     elif "changed" in result:
       token = result["changed"]["token"]
-    shown = None if entry is None or "ok" not in result else _entry_holding(fresh, focus, as_of=now())
-    # A save that removed the shift's first punch (keeping the second of a double clock-in) renames it: the address and
-    # the stored draft move to its new first punch, so a reload still opens it.
-    moved = shown is not None and shown.key != key
-    if shown is not None and moved:
-      key = shown.key
-      result["storageKey"] = f"{stored_as}{key}"
-    editor.send_result(result)  # first: on ok it drops the browser's stored draft
-    if "ok" not in result:
-      return
-    if entry is None:  # an added shift opens as any other
-      if (added := _entry_holding(fresh, {UUID(d["id"]) for d in payload["draft"] if d["new"]}, as_of=now())) is not None:
-        ui.navigate.to(f"/shift?{urlencode({'employee': person.id, 'punch': added.punches[0].id})}")
-    elif shown is not None:
-      chips.refresh(shown)
-      if moved:
-        ui.navigate.history.replace(f"/shift?{urlencode({'employee': person.id, 'punch': key})}")
+    editor.send_result(result)  # on ok the component drops the browser's stored draft, then goes back to the list
 
   editor.on("save", save)
 

@@ -110,6 +110,10 @@ async def draw_employee_list(  # noqa: C901, PLR0915 - one page: its state, its 
     rows.refresh()
 
   with ui.column().classes("page-body employee-list"):
+    if (saved := storage.pop("saved", None)) is not None:  # what an editor saved before coming back; gone on a click (app.py)
+      with ui.row().classes("callout green saved-note").mark("saved-note"):
+        ui.element("span").classes("page-icon icon-check")
+        ui.label(saved)
     with ui.row().classes("ctl"):
       ui.label("Employees").classes("ctl-title")
       if technical:
@@ -165,7 +169,7 @@ async def draw_employee_list(  # noqa: C901, PLR0915 - one page: its state, its 
         for person in shown:
           own = person.id == signin.employee_id
           row = ui.element("tr").classes("r" + " off" * (not person.active)).mark("employee-row", f"employee-row-{person.id}")
-          row.on("click", partial(ui.navigate.to, f"/employee?{urlencode({'id': person.id})}"))
+          row.on("click", partial(ui.navigate.to, f"/employee?{urlencode({'id': person.id, 'back': address().partition('?')[2]})}"))
           with row:
             with ui.element("td"), ui.row().classes("chips"):
               ui.label(person.name).classes("nm")

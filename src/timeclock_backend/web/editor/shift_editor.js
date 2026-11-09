@@ -178,8 +178,6 @@ export default {
       confirmOutside: false, // then Save asks first
       message: null, // {color, text, open}
       dialog: null, // {kind: "join" | "split" | "outside" | "fault", ...}
-      shownHistory: this.history, // the prop, or a save's answer since
-      storageKey: this.options.storageKey, // or the one a save's answer moves it to
     };
   },
   computed: {
@@ -273,9 +271,6 @@ export default {
     },
   },
   watch: {
-    history(next) {
-      this.shownHistory = next;
-    },
     base(next) {
       this.rebaseOnto(next, false);
     },
@@ -289,7 +284,7 @@ export default {
   created() {
     let stored = null;
     try {
-      stored = localStorage.getItem(this.storageKey);
+      stored = localStorage.getItem(this.options.storageKey);
     } catch {
       stored = null;
     }
@@ -423,18 +418,14 @@ export default {
       });
     },
     saveResult(result) {
-      this.saving = false;
       if (result.ok) {
-        const focus = [...this.draft.focus, ...this.changed];
-        this.draft = markRaw(D.newDraft(result.base, { focus }));
-        this.note = "";
-        this.outside = [];
-        this.confirmOutside = false;
-        this.message = { color: "green", text: "Saved." };
-        this.shownHistory = result.history;
+        // Here, not from the server: its navigation would overtake this answer and leave the draft stored.
         this.forget();
-        if (result.storageKey) this.storageKey = result.storageKey; // after forget(): the old key is dropped
-      } else if (result.changed) this.rebaseOnto(result.changed, true);
+        window.location.assign(this.options.back); // the list as it was left, which says what was saved
+        return;
+      }
+      this.saving = false;
+      if (result.changed) this.rebaseOnto(result.changed, true);
       else if (result.refused) this.message = { color: "red", text: result.refused, open: result.open ?? null };
       else if (result.fault) this.dialog = { kind: "fault", ...result.fault };
       else if (result.signedOut) window.location.assign("/signin");
@@ -451,19 +442,19 @@ export default {
       if (this.options.add) window.location.assign(this.options.back);
     },
     store() {
-      if (this.readOnly || !this.storageKey) return;
+      if (this.readOnly || !this.options.storageKey) return;
       try {
         const d = this.draft;
         if (d.edits.size > 0 || d.moved.size > 0 || this.note) {
-          localStorage.setItem(this.storageKey, D.serialize(d, { note: this.note, token: d.base.token }));
-        } else localStorage.removeItem(this.storageKey);
+          localStorage.setItem(this.options.storageKey, D.serialize(d, { note: this.note, token: d.base.token }));
+        } else localStorage.removeItem(this.options.storageKey);
       } catch {
         // storage full or blocked: the draft still lives in this page
       }
     },
     forget() {
       try {
-        localStorage.removeItem(this.storageKey);
+        localStorage.removeItem(this.options.storageKey);
       } catch {
         // as store()
       }
@@ -593,9 +584,9 @@ export default {
           </div>
           <div v-if="!options.add" class="card">
             <h4>History</h4>
-            <p v-if="!shownHistory.length" class="small muted">No earlier changes to this shift.</p>
+            <p v-if="!history.length" class="small muted">No earlier changes to this shift.</p>
             <ul v-else class="hist">
-              <li v-for="(h, i) in shownHistory" :key="i">
+              <li v-for="(h, i) in history" :key="i">
                 <div><b>{{ h.when }}</b> · {{ h.who }}</div>
                 <div v-for="(line, j) in h.lines" :key="j">{{ line }}</div>
                 <div v-if="h.note" class="muted">"{{ h.note }}"</div>

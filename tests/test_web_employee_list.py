@@ -94,7 +94,7 @@ async def test_a_row_opens_the_employee(db_page: DbPage, monkeypatch: pytest.Mon
   monkeypatch.setattr(ui.navigate, "to", opened.append)
   await db_page.user.open("/employees")
   db_page.user.find(marker=f"employee-row-{bob}").click()
-  assert opened == [f"/employee?id={bob}"]
+  assert opened == [f"/employee?id={bob}&back="]  # the list as it was left: no filters
 
 
 async def test_the_list_updates_live(db_page: DbPage) -> None:

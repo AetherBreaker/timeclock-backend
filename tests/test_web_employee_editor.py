@@ -51,11 +51,33 @@ async def test_editing_a_field_lists_it_and_saving_writes_it(db_page: DbPage) ->
   await db_page.user.should_see("Was empty")
   db_page.user.find(marker="note").type("new phone")
   db_page.user.find(marker="save").click()
-  await db_page.user.should_see("Saved.")
+  await db_page.user.should_see("Saved: Bob Lee.")  # back on the Employees list
   assert _row(db_page, bob, "phone") == ("+15555550142",)
+  await db_page.user.open(f"/employee?id={bob}")
   await db_page.user.should_see(marker="history-line", content="Phone: empty to (555) 555-0142")
   await db_page.user.should_see(marker="history-line", content='"new phone"')
   await db_page.user.should_see("None yet.")
+
+
+async def test_saving_goes_back_to_the_employees_list_as_it_was_left(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  await db_page.user.open("/employees?q=bob")
+  db_page.user.find(marker=f"employee-row-{bob}").click()
+  await db_page.user.should_see(marker="field-phone")
+  assert _widget(db_page, "crumb").props["href"] == "/employees?q=bob"
+  db_page.user.find(marker="field-phone").type("5555550142")
+  await db_page.user.should_see("Phone: empty to (555) 555-0142")
+  db_page.user.find(marker="save").click()
+  await db_page.user.should_see("Saved: Bob Lee.")
+  assert _widget(db_page, "employee-search").value == "bob"
+  await db_page.user.open("/employees?q=bob")  # a reload, or the next list: the note is gone
+  await db_page.user.should_see(marker=f"employee-row-{bob}")
+  await db_page.user.should_not_see("Saved: Bob Lee.")
+
+
+async def test_an_employee_opened_directly_goes_back_to_the_whole_list(db_page: DbPage) -> None:
+  await db_page.user.open(f"/employee?id={db_page.db.employees[1]}")
+  assert _widget(db_page, "crumb").props["href"] == "/employees"
 
 
 async def test_discard_puts_every_field_back(db_page: DbPage) -> None:
@@ -100,7 +122,7 @@ async def test_clearing_optional_fields_stores_null(db_page: DbPage) -> None:
     db_page.user.find(marker=f"field-{field}").clear()
   await db_page.user.should_see("Email: bob@example.com to empty")
   db_page.user.find(marker="save").click()
-  await db_page.user.should_see("Saved.")
+  await db_page.user.should_see("Saved: Bob Lee.")
   assert _row(db_page, bob, "middle_name", "phone", "email") == (None, None, None)
 
 
@@ -113,7 +135,7 @@ async def test_your_own_record_locks_work_fields(db_page: DbPage) -> None:
   db_page.user.find(marker="field-first_name").clear().type("Annie")
   await db_page.user.should_see("First name: Ann to Annie")  # the redraw that turns Save on runs in the background
   db_page.user.find(marker="save").click()
-  await db_page.user.should_see("Saved.")
+  await db_page.user.should_see("Saved: Annie Lee.")
   assert _row(db_page, ann, "first_name") == ("Annie",)
 
 
@@ -193,7 +215,7 @@ async def test_an_outside_change_to_a_drafted_field_asks_whose_to_keep(db_page: 
   await db_page.user.should_not_see("Email: theirs@example.com to mine@example.com")
   assert _widget(db_page, "field-email").value == "theirs@example.com"
   db_page.user.find(marker="save").click()
-  await db_page.user.should_see("Saved.")
+  await db_page.user.should_see("Saved: Bob Lee.")
   assert _row(db_page, bob, "phone", "email") == ("+15555550142", "theirs@example.com")
 
 
@@ -225,7 +247,7 @@ async def test_an_outside_change_elsewhere_asks_to_confirm_the_save(db_page: DbP
   await db_page.user.should_see("Save your changes on top of theirs?")
   assert _row(db_page, bob, "phone") == (None,)
   db_page.user.find(marker="confirm-save").click()
-  await db_page.user.should_see("Saved.")
+  await db_page.user.should_see("Saved: Bob Lee.")
   assert _row(db_page, bob, "phone", "email") == ("+15555550142", "theirs@example.com")
 
 

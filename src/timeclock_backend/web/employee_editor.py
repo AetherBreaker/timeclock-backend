@@ -12,6 +12,7 @@ import re
 import secrets
 from functools import partial
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qsl, urlencode
 
 # Third party imports
 import bcrypt
@@ -147,8 +148,10 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
   chosen = prefs()
   h24, technical = chosen["h24"], chosen["technical"]
   employee = int(v) if (v := query.get("id", "")).isdigit() else None
+  # The list as it was left (its rows pass their query as `back`), where the crumb and a save go back to.
+  listed = f"/employees?{q}" if (q := urlencode(parse_qsl(query.get("back", "")))) else "/employees"
   body = ui.column().classes("page-body employee-editor offline-inert")  # inert while the socket is down (app.py)
-  with body, ui.link(target="/employees").classes("crumb").mark("crumb"):
+  with body, ui.link(target=listed).classes("crumb").mark("crumb"):
     ui.element("span").classes("page-icon icon-arrow-back")
     ui.label("Employees")
 
@@ -379,7 +382,7 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
         ui.label(f"{' and '.join(whos)} changed {named} while you were editing.")
     if message is not None:
       with ui.row().classes(f"callout {message[0]}"):
-        ui.element("span").classes("page-icon " + {"green": "icon-check", "orange": "icon-warning"}.get(message[0], "icon-error"))
+        ui.element("span").classes("page-icon " + ("icon-warning" if message[0] == "orange" else "icon-error"))
         ui.label(message[1])
     if not draft:
       ui.label("None yet.").classes("small muted")
@@ -436,10 +439,12 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
           moved = await save_employee(conn, employee_id=employee, base=base, changes=wanted, note=(note.value or "").strip())
           fresh = await _read(conn, employee, default_tz=settings.tz)  # what it saved, or what it lost to
       except SignedOutError:
-        ui.navigate.to("/signin")
+        with client:  # the button that called this may have been redrawn since, and its slot with it
+          ui.navigate.to("/signin")
         return
       except DatabaseChangedError:
-        ui.navigate.reload()
+        with client:
+          ui.navigate.reload()
         return
       except LookupError:
         message = ("red", text.EMPLOYEE_GONE)
@@ -452,11 +457,11 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
       finally:
         saving = False
       if fresh is not None and moved is None:
-        draft.clear()
-        note.set_value("")
-        take(fresh)
-        message = ("green", "Saved.")
-      elif fresh is not None:  # a changed field moved underneath it: marked to pick, as a live update marks it
+        storage["saved"] = f"Saved: {fresh[0].people[employee].name}."  # said by the list it goes back to
+        with client:
+          ui.navigate.to(listed)
+        return
+      if fresh is not None:  # a changed field moved underneath it: marked to pick, as a live update marks it
         message = ("orange", text.EMPLOYEE_CHANGED) if take(fresh) else ("red", text.EMPLOYEE_GONE)
       redraw()
 
@@ -498,10 +503,12 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
           await set_pin(conn, employee_id=employee, pin_hash=pin_hash)
           fresh = await _read(conn, employee, default_tz=settings.tz)  # for its "PIN changed"
       except SignedOutError:
-        ui.navigate.to("/signin")
+        with client:  # the button that called this may have been redrawn since, and its slot with it
+          ui.navigate.to("/signin")
         return
       except DatabaseChangedError:
-        ui.navigate.reload()
+        with client:
+          ui.navigate.reload()
         return
       except LookupError:
         failed = text.EMPLOYEE_GONE
