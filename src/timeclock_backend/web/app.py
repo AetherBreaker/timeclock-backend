@@ -63,6 +63,9 @@ _ACTIVITY_SCRIPT: Final = """<script>
   const ping = () => { if (Date.now() - last > 60000) { last = Date.now(); emitEvent("page_activity"); } };
   addEventListener("pointerdown", ping, true);
   addEventListener("keydown", ping, true);
+  // A list's "Saved: ..." note, from the editor it came back from, lasts until the next click.
+  const seen = () => document.querySelectorAll(".saved-note").forEach((e) => (e.style.display = "none"));
+  addEventListener("pointerdown", seen, { capture: true, once: true });
   const watch = () => {
     if (!window.socket) return setTimeout(watch, 200);
     const offline = (down) => {

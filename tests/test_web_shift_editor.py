@@ -53,6 +53,21 @@ def _edit(punch: UUID, version: UUID | None = None, **change: Any) -> dict[str, 
   return values | {k: ms(v) if isinstance(v, datetime) else v for k, v in change.items()}
 
 
+def _widget(page: DbPage, marker: str) -> Any:
+  [found] = page.user.find(marker=marker).elements
+  return found
+
+
+async def _send_save(page: DbPage, monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) -> list[dict[str, Any]]:
+  """Dispatch the component's save as NiceGUI dispatches a browser's event; returns the answers it got."""
+  editor, answered, answers = _editor(page), asyncio.Event(), []
+  monkeypatch.setattr(editor, "run_method", lambda _, result: (answers.append(result), answered.set()))
+  [listener] = [key for key, found in editor._event_listeners.items() if found.type == "save"]  # pyright: ignore[reportPrivateUsage]
+  editor._handle_event({"listener_id": listener, "args": payload})  # pyright: ignore[reportPrivateUsage]
+  await asyncio.wait_for(answered.wait(), 10)
+  return answers
+
+
 def _badge(db: PagesDb) -> AbstractAsyncContextManager[AsyncConnection[DictRow]]:
   gate, storage, session = Gate(page_settings(), db.accounts, {}), {}, {}
   gate.start(storage, session, db.email)
@@ -161,26 +176,9 @@ async def test_the_components_save_event_saves_and_answers(db_page: DbPage, monk
   payload = await _payload(db_page.db, bob, [_edit(out, kind="clock_out", at=_ny(3, "17:05"))], note="left at 5")
   editor._handle_event({"listener_id": listener, "args": payload})  # pyright: ignore[reportPrivateUsage]
   await asyncio.wait_for(answered.wait(), 10)
-  assert answers[0].keys() == {"ok", "base", "history"}
+  assert answers[0].keys() == {"ok", "base"}
   with db_page.db.admin() as conn:
     assert conn.execute("SELECT note FROM punch_corrections").fetchall() == [("left at 5",)]
-
-
-async def test_a_save_redraws_the_title_and_the_history(db_page: DbPage, monkeypatch: pytest.MonkeyPatch) -> None:
-  bob = db_page.db.employees[1]
-  start = db_page.db.punch(bob, "clock_in", _ny(3, "07:58"))
-  out = db_page.db.punch(bob, "clock_out", _ny(3, "23:00"), automatic=True)
-  await db_page.user.open(f"/shift?employee={bob}&punch={start}")
-  await db_page.user.should_see("Automatic clock-out")
-  await db_page.user.should_not_see("Automatic clock-out, fixed")
-  editor, answered = _editor(db_page), asyncio.Event()
-  monkeypatch.setattr(editor, "run_method", lambda *_: answered.set())
-  [listener] = [key for key, found in editor._event_listeners.items() if found.type == "save"]  # pyright: ignore[reportPrivateUsage]
-  payload = await _payload(db_page.db, bob, [_edit(out, kind="clock_out", at=_ny(3, "17:05"))], note="left at 5")
-  editor._handle_event({"listener_id": listener, "args": payload})  # pyright: ignore[reportPrivateUsage]
-  await asyncio.wait_for(answered.wait(), 10)
-  await db_page.user.should_see("Automatic clock-out, fixed")
-  assert [item["note"] for item in editor.props["history"]] == ["left at 5"]  # kept for a later full redraw
 
 
 async def test_a_save_that_breaks_still_answers(db_page: DbPage, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -335,18 +333,56 @@ async def test_an_overlapping_new_shift_is_refused_with_a_link(pages_db: PagesDb
   }
 
 
-async def test_an_added_shift_then_opens_in_the_editor(db_page: DbPage, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_adding_a_shift_goes_back_to_the_list_and_says_so(db_page: DbPage, monkeypatch: pytest.MonkeyPatch) -> None:
   bob = db_page.db.employees[1]
-  await db_page.user.open(f"/shift/new?employee={bob}&date=2026-11-04")
+  await db_page.user.open(f"/shift/new?employee={bob}&date=2026-11-04&back=week%3D2026-11-02%26role%3Demployee")
   await db_page.user.should_see(kind=ShiftEditor)
-  editor, answered = _editor(db_page), asyncio.Event()
-  monkeypatch.setattr(editor, "run_method", lambda *_: answered.set())
-  [listener] = [key for key, found in editor._event_listeners.items() if found.type == "save"]  # pyright: ignore[reportPrivateUsage]
   new = [_edit(uuid4(), kind="clock_in", at=_ny(4, "08:00"), new=True), _edit(uuid4(), kind="clock_out", at=_ny(4, "16:30"), new=True)]
-  editor._handle_event({"listener_id": listener, "args": await _payload(db_page.db, bob, new, focus=[])})  # pyright: ignore[reportPrivateUsage]
-  await asyncio.wait_for(answered.wait(), 10)
-  await db_page.user.should_see("Wednesday, November 4, 2026")
-  await db_page.user.should_not_see("Add a shift")
+  assert (await _send_save(db_page, monkeypatch, await _payload(db_page.db, bob, new, focus=[])))[0].keys() == {"ok", "base"}
+  assert _editor(db_page).props["options"]["back"] == "/?week=2026-11-02&role=employee"  # where the component goes on ok
+  await db_page.user.open("/?week=2026-11-02&role=employee")
+  await db_page.user.should_see("Saved: Bob Lee, Wed, Nov 4.")
+
+
+async def test_saving_goes_back_to_the_list_as_it_was_left_and_says_so(db_page: DbPage, monkeypatch: pytest.MonkeyPatch) -> None:
+  bob = db_page.db.employees[1]
+  start = db_page.db.punch(bob, "clock_in", _ny(3, "07:58"))
+  out = db_page.db.punch(bob, "clock_out", _ny(3, "23:00"), automatic=True)
+  await db_page.user.open("/?week=2026-11-02&role=employee")
+  db_page.user.find(marker=f"row-{start}").click()
+  await db_page.user.should_see(kind=ShiftEditor)
+  assert _widget(db_page, "crumb").props["href"] == "/?week=2026-11-02&role=employee"
+  answers = await _send_save(db_page, monkeypatch, await _payload(db_page.db, bob, [_edit(out, kind="clock_out", at=_ny(3, "17:05"))]))
+  assert answers[0].keys() == {"ok", "base"}
+  assert _editor(db_page).props["options"]["back"] == "/?week=2026-11-02&role=employee"  # where the component goes on ok
+  await db_page.user.open("/?week=2026-11-02&role=employee")
+  await db_page.user.should_see("Saved: Bob Lee, Tue, Nov 3.")
+  await db_page.user.open("/?week=2026-11-02&role=employee")  # a reload, or the next list: the note is gone
+  await db_page.user.should_see(marker=f"row-{start}")
+  await db_page.user.should_not_see("Saved: Bob Lee, Tue, Nov 3.")
+
+
+async def test_an_editor_opened_directly_goes_back_to_its_week(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  start = db_page.db.punch(bob, "clock_in", _ny(3, "07:58"))
+  await db_page.user.open(f"/shift?employee={bob}&punch={start}")
+  await db_page.user.should_see(kind=ShiftEditor)
+  assert _widget(db_page, "crumb").props["href"] == "/?week=2026-11-02"
+  assert _editor(db_page).props["options"]["back"] == "/?week=2026-11-02"
+
+
+async def test_add_shift_keeps_the_list_through_its_pickers(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  await db_page.user.open("/?week=2026-11-02&role=employee")
+  db_page.user.find(marker="add-shift").click()
+  await db_page.user.should_see("Add a shift")
+  assert _widget(db_page, "crumb").props["href"] == "/?week=2026-11-02&role=employee"
+  assert db_page.user.client is not None
+  with db_page.user.client:
+    _widget(db_page, "add-employee").set_value(bob)  # a choice is a page load
+  await db_page.user.should_see(marker="add-date")
+  assert _widget(db_page, "add-employee").value == bob
+  assert _widget(db_page, "crumb").props["href"] == "/?week=2026-11-02&role=employee"
 
 
 async def test_only_the_shift_editor_outlives_a_dropped_connection(page: PageUnderTest) -> None:
@@ -371,24 +407,3 @@ async def test_an_added_open_shift_with_punches_after_it_needs_its_clock_out(pag
   pages_db.punch(bob, "clock_out", _ny(5, "08:45"))
   earlier = [_edit(uuid4(), kind="clock_in", at=_ny(5, "07:00"), new=True)]
   assert await _save(pages_db, bob, earlier, focus=[]) == {"refused": text.ADD_CLOCK_OUT, "open": None}
-
-
-async def test_a_save_that_removes_the_shifts_first_punch_moves_the_address(db_page: DbPage, monkeypatch: pytest.MonkeyPatch) -> None:
-  # The usual double clock-in fix: keeping the second removes the punch the address and the stored draft are named for.
-  bob = db_page.db.employees[1]
-  first = db_page.db.punch(bob, "clock_in", _ny(3, "07:01"))
-  second = db_page.db.punch(bob, "clock_in", _ny(3, "07:04"))
-  out = db_page.db.punch(bob, "clock_out", _ny(3, "15:33"))
-  await db_page.user.open(f"/shift?employee={bob}&punch={first}")
-  await db_page.user.should_see(kind=ShiftEditor)
-  editor, answered, answers, addresses = _editor(db_page), asyncio.Event(), [], []
-  monkeypatch.setattr(editor, "run_method", lambda _, result: (answers.append(result), answered.set()))
-  monkeypatch.setattr(ui.navigate.history, "replace", addresses.append)
-  key = editor.props["options"]["storageKey"]
-  [listener] = [key for key, found in editor._event_listeners.items() if found.type == "save"]  # pyright: ignore[reportPrivateUsage]
-  draft = [_edit(first, removed=True, kind="clock_in", at=_ny(3, "07:01"))]
-  payload = await _payload(db_page.db, bob, draft, focus=[str(first), str(second), str(out)])
-  editor._handle_event({"listener_id": listener, "args": payload})  # pyright: ignore[reportPrivateUsage]
-  await asyncio.wait_for(answered.wait(), 10)
-  assert answers[0]["storageKey"] == key.removesuffix(str(first)) + str(second)
-  assert addresses == [f"/shift?employee={bob}&punch={second}"]

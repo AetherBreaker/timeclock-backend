@@ -142,6 +142,10 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
     rows.refresh()
 
   with ui.column().classes("page-body shift-list"):
+    if (saved := storage.pop("saved", None)) is not None:  # what an editor saved before coming back; gone on a click (app.py)
+      with ui.row().classes("callout green saved-note").mark("saved-note"):
+        ui.element("span").classes("page-icon icon-check")
+        ui.label(saved)
     with ui.row().classes("ctl"):
       ui.label("Shifts").classes("ctl-title")
       with ui.row().classes("wk"):
@@ -156,11 +160,15 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
           ui.element("span").classes("page-icon icon-code")
           ui.label("Technical details on")
       ui.space()
-      # For the employee the list is narrowed to when clicked, unless that's you (spec §6.13).
+      # For the employee the list is narrowed to when clicked, unless that's you (spec §6.13); `back` is this list's query.
       with (
         ui.button(
           on_click=lambda: ui.navigate.to(
-            "/shift/new" if employee is None or employee == signin.employee_id else f"/shift/new?employee={employee}"
+            "/shift/new?"
+            + urlencode(
+              {"back": address().partition("?")[2]}
+              | ({} if employee is None or employee == signin.employee_id else {"employee": employee})
+            )
           )
         )
         .props("no-caps unelevated color=primary text-color=black")
@@ -270,7 +278,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
               TextElement(tag="th", text="")
             for e, found_flags, _ in visible:
               edge = " red" if Flag.NEEDS_FIXING in found_flags else " orange" if Flag.AUTOMATIC in found_flags else ""
-              link = f"/shift?{urlencode({'employee': person.id, 'punch': e.key})}"
+              link = f"/shift?{urlencode({'employee': person.id, 'punch': e.key, 'back': address().partition('?')[2]})}"
               row = ui.element("tr").classes(f"r{edge}{' mine' * own}").mark(f"row-{e.key}")
               row.on("click", partial(ui.navigate.to, link))
               with row:
