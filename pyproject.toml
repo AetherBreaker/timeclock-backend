@@ -13,7 +13,7 @@
     "nicegui>=3.18,<4",
     "psycopg[binary]>=3.2.10",
     "psycopg-pool>=3.3.3",
-    "timeclock-schema>=0.12.1",
+    "timeclock-schema>=0.12.2",
     "tzdata>=2026.5",
   ]
 
