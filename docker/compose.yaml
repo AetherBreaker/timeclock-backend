@@ -6,7 +6,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         GIT_REPO: https://github.com/AetherBreaker/timeclock-backend.git
-        GIT_TAG: v0.10.0
+        GIT_TAG: v0.10.1
     restart: unless-stopped
     volumes:
       - type: bind
@@ -58,7 +58,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         GIT_REPO: https://github.com/AetherBreaker/timeclock-backend.git
-        GIT_TAG: v0.10.0
+        GIT_TAG: v0.10.1
     # Not `devkit-container run`: that runs the one run-app-* script and the tunnel, neither of which the page uses.
     entrypoint: ["/app/.venv/bin/timeclock-web"]
     expose:
