@@ -182,7 +182,7 @@ class Runner:
           missed[-1].isoformat(),
           due.isoformat(),
         )
-      due = schedule.next_after(now)
+      due = schedule.next_after(max(now, due))  # max(): a clock stepped back past `due` mustn't run it again
     self._next[name] = None
     if self._waits.get(name) is asyncio.current_task():
       del self._waits[name]
@@ -207,12 +207,18 @@ class Runner:
             retry_at, giving_up = None, False
           else:
             retry_at = self._clock.now() + retry.interval
-            giving_up = attempt > retry.max_retries or (next_time is not None and retry_at >= next_time)
+            # A shutdown or a superseded definition ends the retries too: no rest holding the lock for nothing.
+            giving_up = (
+              attempt > retry.max_retries
+              or (next_time is not None and retry_at >= next_time)
+              or self._stopping
+              or self._entries[entry.name] is not entry
+            )
           try:
             await job.on_failure(due, error, attempt, giving_up)
           except Exception:
             LOGGER.exception("on_failure of %s raised", entry.name)
-          if retry_at is None or giving_up or self._stopping:  # don't rest through a shutdown
+          if retry_at is None or giving_up:
             return
         else:
           return

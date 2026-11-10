@@ -398,3 +398,28 @@ async def test_a_failure_after_request_stop_does_not_rest_for_a_retry(clock: Fak
     await asyncio.sleep(0)
   assert clock.now() == stopped_at  # a rest would have advanced the fake clock
   assert job.ran_at == [ny(6)]
+
+
+async def test_a_run_superseded_mid_main_does_not_rest_after_failing(clock: FakeClock, runners: list[Runner]) -> None:
+  block = asyncio.Event()
+  job = RecordingJob(clock, fails=-1, block=block)
+  runner = await started(runners, clock, [], [Entry("d", Cron("0 6 * * *", NY), job, retry=Retry(timedelta(minutes=15), 4))])
+  await until(lambda: job.seen != [])
+  other = RecordingJob(clock)
+  runner.replace("d", Entry("d", At(ny(6)), other))
+  block.set()
+  await until(lambda: other.seen != [])
+  assert other.ran_at == [ny(6)]  # not held behind a retry rest
+  assert job.ran_at == [ny(6)]
+  assert job.failures == [(1, True)]  # no retry follows
+
+
+async def test_clock_stepping_back_during_a_run_does_not_repeat_it(clock: FakeClock, runners: list[Runner]) -> None:
+  block = asyncio.Event()
+  job = RecordingJob(clock, block=block)
+  await started(runners, clock, [Entry("hourly", HOURLY, job)])
+  await until(lambda: job.seen != [])
+  clock.t = ny(5, 59, 40).astimezone(UTC)  # stepped back 30 s, 10 s into the run
+  block.set()
+  await until(lambda: job.seen[1:] != [])
+  assert job.seen == [ny(6), ny(7)]
