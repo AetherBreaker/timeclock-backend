@@ -20,7 +20,7 @@ from timeclock_backend.bootstrap import bootstrap
 from timeclock_backend.databases import Database, connect
 from timeclock_backend.jobs import auto_clock_out
 from timeclock_backend.jobs.auto_clock_out import RETRY_DELAY, AutoClockOutJob, listen_for_settings, run_auto_clock_out
-from timeclock_backend.scheduling import SYSTEM_CLOCK, Clock, Entry, Runner
+from timeclock_backend.scheduling import SYSTEM_CLOCK, At, Clock, Entry, Runner, jobs as scheduling_jobs
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -47,6 +47,7 @@ def alerts(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, dict[str, An
     recorded.append((reason, details, kwargs))
 
   monkeypatch.setattr(auto_clock_out, "alert", record)
+  monkeypatch.setattr(scheduling_jobs, "alert", record)  # JobBase.on_failure's, for a run the runner starts
   return recorded
 
 
@@ -582,3 +583,25 @@ async def test_pass_without_a_runner_runs_and_schedules_nothing(migrated: Databa
   missed = await add_run(migrated, datetime.now(UTC) - timedelta(days=1), zone=noon)
   await AutoClockOutJob(migrated).main(datetime.now(UTC))
   assert (await run_row(migrated, missed))["ran_at"] is not None
+
+
+async def test_runner_started_pass_failing_unexpectedly_alerts_and_retries(
+  migrated: Database, noon: str, job: AutoClockOutJob, alerts: list[tuple[str, str, dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A non-database error escapes the pass to the runner, which alerts; the job still retries after `RETRY_DELAY`."""
+  await add_run(migrated, datetime.now(UTC) - timedelta(days=1), zone=noon)
+
+  async def broken(_db: Database, _run_id: int) -> NoReturn:
+    msg = "bug"
+    raise RuntimeError(msg)
+
+  monkeypatch.setattr(auto_clock_out, "run_auto_clock_out", broken)
+  assert job.runner is not None
+  before = datetime.now(UTC)
+  job.runner.replace(job.name, Entry(job.name, At(before), job))
+  await wait_for(lambda: (at := job_time(job)) is not None and at >= before + RETRY_DELAY)
+  [(reason, _, _)] = alerts
+  assert reason == f"Scheduled job {job.name} failed"
+  retry = job_time(job)
+  assert retry is not None
+  assert retry <= datetime.now(UTC) + RETRY_DELAY

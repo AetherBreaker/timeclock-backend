@@ -149,6 +149,11 @@ class Runner:
       raise KeyError(name)
     self.replace(name, dataclasses.replace(self._entries[name], schedule=None))
 
+  @property
+  def stopping(self) -> bool:
+    """Whether a stop has begun: no new run starts."""
+    return self._stopping
+
   def next_run(self, name: str) -> datetime | None:
     """The entry's next scheduled time, or None when idle; `KeyError` for an undeclared name."""
     return self._next[name]

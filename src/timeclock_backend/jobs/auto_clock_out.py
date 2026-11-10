@@ -163,6 +163,21 @@ class AutoClockOutJob(JobBase):
         self.runner.replace(self.name, Entry(self.name, At(next_at), self))
         LOGGER.info("next auto clock-out pass in %s at %s", db.name, next_at)
 
+  @override
+  async def on_failure(self, scheduled_for: datetime, error: Exception, attempt: int, giving_up: bool) -> None:
+    """Alert as every job does, then retry after `RETRY_DELAY` as a database error does, so a bug can't end the clock-outs."""
+    await super().on_failure(scheduled_for, error, attempt, giving_up)
+    runner = self.runner
+    if runner is None:
+      LOGGER.warning("auto clock-out in %s failed with no runner; no retry scheduled", self.db.name)
+      return
+    # A newer pass already re-planned a superseded entry: its next run is no longer the one that failed.
+    if runner.stopping or runner.next_run(self.name) != scheduled_for:
+      return
+    retry_at = datetime.now(UTC) + RETRY_DELAY
+    runner.replace(self.name, Entry(self.name, At(retry_at), self))
+    LOGGER.info("auto clock-out pass in %s failed; retrying at %s", self.db.name, retry_at)
+
 
 async def listen_for_settings(job: AutoClockOutJob) -> None:
   """Run a pass whenever `config.settings` changes; runs until cancelled.
