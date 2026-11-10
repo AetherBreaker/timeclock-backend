@@ -25,8 +25,6 @@ from timeclock_backend.reports.payroll import PAYROLL_TABS
 from timeclock_backend.scheduling import JobBase
 from timeclock_backend.settings import SETTINGS
 
-NO_GROUP = "No Group"
-
 
 class PayrollReportJob(JobBase):
   """Emails one payroll workbook per group (`groups=None`: every group) to `recipients`."""
@@ -69,19 +67,6 @@ class PayrollReportJob(JobBase):
       scopes: dict[str, dict[int, ScopeEmployee]] = {
         name: {e["id"]: ScopeEmployee(e["name"], e["active"]) for e in employees if e["group_id"] == known[name]} for name in names
       }
-      if self.groups is None:
-        ungrouped = {e["id"]: ScopeEmployee(e["name"], e["active"]) for e in employees if e["group_id"] is None}
-        start_at, end_at = period.bounds(SETTINGS.tz)
-        # Raw punches, not punch_log: an employee who punched at all is worth a workbook.
-        punched = await (
-          await conn.execute(
-            "SELECT EXISTS (SELECT FROM punches WHERE employee_id = ANY(%s) AND at >= %s AND at < %s) AS found",
-            (list(ungrouped), start_at, end_at),
-          )
-        ).fetchone()
-        if punched is not None and punched["found"]:
-          names.append(NO_GROUP)
-          scopes[NO_GROUP] = ungrouped
 
       with TemporaryDirectory() as tmp:
         paths: list[Path] = []

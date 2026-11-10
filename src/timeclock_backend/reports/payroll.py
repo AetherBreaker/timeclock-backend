@@ -15,6 +15,7 @@ _PUNCH_TYPES: Final = {
   "lunch_end": "Lunch Ended",
 }
 
+# paid_hours is computed in each query from the same row's hours and breaks (h:mm text), so the displayed figures always add up.
 PAYROLL_TABS: Final = (
   Tab(
     name="Punch Log",
@@ -42,7 +43,7 @@ PAYROLL_TABS: Final = (
       Column("Clock In", "clock_in", Kind.TIMESTAMP),
       Column("Clock Out", "clock_out", Kind.TIMESTAMP),
       Column("Corrected", "corrected", Kind.YES_NO),
-      Column("Shift Length", "shift_length", Kind.DURATION),
+      Column("Paid Hours", "paid_hours", Kind.DURATION),
       Column("Hours", "hours", Kind.DURATION),
       Column("Breaks", "breaks", Kind.DURATION),
       Column("Unpaid Breaks", "unpaid_breaks", Kind.DURATION),
@@ -55,7 +56,10 @@ PAYROLL_TABS: Final = (
       Column("Lunch Times", "lunch_times", Kind.TEXT),
     ),
     query="""
-      SELECT employee_id, employee_name, day, clock_in, clock_out, corrected, shift_length, hours, breaks, unpaid_breaks, lunches,
+      SELECT employee_id, employee_name, day, clock_in, clock_out, corrected, hours, breaks,
+             h_mm(split_part(hours, ':', 1)::numeric * 60 + split_part(hours, ':', 2)::numeric
+             + split_part(breaks, ':', 1)::numeric * 60 + split_part(breaks, ':', 2)::numeric) AS paid_hours,
+             unpaid_breaks, lunches,
              break_count, lunch_count, breaks_over_limit, break_overage, break_times, lunch_times
       FROM shift_summary
       WHERE day BETWEEN %(start)s AND %(end)s AND employee_id = ANY(%(employee_ids)s)
@@ -67,13 +71,17 @@ PAYROLL_TABS: Final = (
     grain=Grain.PER_EMPLOYEE,
     columns=(
       Column("Employee Name", "employee_name", Kind.NAME),
+      Column("Paid Hours", "paid_hours", Kind.DURATION),
       Column("Hours", "hours", Kind.DURATION),
       Column("Breaks", "breaks", Kind.DURATION),
       Column("Lunches", "lunches", Kind.DURATION),
       Column("Unpaid Breaks", "unpaid_breaks", Kind.DURATION),
     ),
     query="""
-      SELECT employee_id, employee_name, hours, breaks, lunches, unpaid_breaks
+      SELECT employee_id, employee_name, hours, breaks,
+             h_mm(split_part(hours, ':', 1)::numeric * 60 + split_part(hours, ':', 2)::numeric
+             + split_part(breaks, ':', 1)::numeric * 60 + split_part(breaks, ':', 2)::numeric) AS paid_hours,
+             lunches, unpaid_breaks
       FROM weekly_hours
       WHERE week_of = %(start)s AND employee_id = ANY(%(employee_ids)s)
     """,
