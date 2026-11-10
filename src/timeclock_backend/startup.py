@@ -79,6 +79,9 @@ async def main() -> None:
     task.add_done_callback(_surface_task_failure)
 
   await SHUTDOWN
+  # Declares the tail below without blocking: undeclared, aeth_ext's exit nudge fires 0.25 s after the threaded pass and
+  # cancels a running job mid-`runner.stop`; declared, it waits out the graceful budget less a margin.
+  SHUTDOWN_COMPLETE.wait(timeout=0)
 
   logger.log(INFO if SHUTDOWN.kind is ShutdownKind.GRACEFUL else WARNING, "Shutdown requested (%s); stopping", SHUTDOWN.kind.name)
 
@@ -91,7 +94,7 @@ async def main() -> None:
   await asyncio.gather(heartbeat, *listeners, return_exceptions=True)
 
   try:
-    await runner.stop(5.0)  # a running job's budget, inside aeth_ext's 7 s graceful one
+    await runner.stop(5.0)  # a running job's budget: inside the 7 s graceful one, which the declaration above holds the nudge to
   except Exception:
     logger.exception("Shutdown: failed to stop the job runner cleanly")
 
