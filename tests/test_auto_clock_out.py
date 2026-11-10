@@ -2,7 +2,8 @@
 
 # Standard library imports
 import asyncio
-from contextlib import suppress
+import logging
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, date, datetime, time, timedelta
 from itertools import count
 from typing import TYPE_CHECKING, Any, NoReturn, override
@@ -10,24 +11,21 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 # Third party imports
-import apscheduler.executors.base
-import apscheduler.schedulers.base
 import psycopg
 import pytest
-from apscheduler.triggers.date import DateTrigger
 from psycopg import sql
 from timeclock_schema.wire import NOTIFY_CHANNEL
 
 # First party imports
-from timeclock_backend import auto_clock_out
-from timeclock_backend.auto_clock_out import RETRY_DELAY, listen_for_settings, run_auto_clock_out, sync_auto_clock_out
 from timeclock_backend.bootstrap import bootstrap
 from timeclock_backend.databases import Database, connect
-from timeclock_backend.scheduler_config import Scheduler
+from timeclock_backend.jobs import auto_clock_out
+from timeclock_backend.jobs.auto_clock_out import RETRY_DELAY, AutoClockOutJob, listen_for_settings, run_auto_clock_out
+from timeclock_backend.scheduling import SYSTEM_CLOCK, At, Clock, Entry, Runner, jobs as scheduling_jobs
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import AsyncIterator, Callable
+  from collections.abc import AsyncGenerator, AsyncIterator, Callable
 
 NY = ZoneInfo("America/New_York")
 D = date(2026, 10, 27)
@@ -50,6 +48,7 @@ def alerts(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, dict[str, An
     recorded.append((reason, details, kwargs))
 
   monkeypatch.setattr(auto_clock_out, "alert", record)
+  monkeypatch.setattr(scheduling_jobs, "alert", record)  # JobBase.on_failure's, for a run the runner starts
   return recorded
 
 
@@ -133,7 +132,7 @@ async def test_run_closes_open_shift_at_its_stamp(migrated: Database) -> None:
 async def test_stamp_after_the_run_is_written_as_stamped(migrated: Database) -> None:
   """A stamp later than the run, even one still in the future, is written at once (owner, 2026-10-27)."""
   e = await add_employee(migrated)
-  await add_punch(migrated, e, "clock_in", local(D, 8))
+  await add_punch(migrated, e, "clock_in", datetime.now(UTC) - timedelta(hours=8))  # within LOOKBACK whatever the date
   stamp = datetime.now(UTC) + timedelta(hours=1)
   assert await run_auto_clock_out(migrated, await add_run(migrated, datetime.now(UTC), stamp)) == 1
   [row] = await clock_outs(migrated)
@@ -238,12 +237,22 @@ async def noon(migrated: Database) -> str:
   return zone
 
 
+@asynccontextmanager
+async def registered(db: Database, clock: Clock = SYSTEM_CLOCK) -> AsyncGenerator[AutoClockOutJob]:
+  """`db`'s job on a started runner, declared idle as in `schedule.DYNAMIC`."""
+  job = AutoClockOutJob(db)
+  runner = Runner((), (Entry(f"auto_clock_out:{db.name}", None, job),), clock=clock)
+  await runner.start()
+  try:
+    yield job
+  finally:
+    await runner.stop(1.0)
+
+
 @pytest.fixture
-async def scheduler() -> AsyncIterator[Scheduler]:
-  s = Scheduler.init_scheduler()
-  s.start()
-  yield s
-  s.shutdown(wait=False)
+async def job(migrated: Database) -> AsyncIterator[AutoClockOutJob]:
+  async with registered(migrated) as job:
+    yield job
 
 
 async def future_runs(db: Database) -> list[dict]:
@@ -254,30 +263,29 @@ async def future_runs(db: Database) -> list[dict]:
     return await cursor.fetchall()
 
 
-def job_time(scheduler: Scheduler, db: Database) -> datetime | None:
-  job = scheduler.get_job(f"auto_clock_out:{db.name}")
-  # Pyright infers get_job from APScheduler's untyped source: a tuple, never None.
-  return None if job is None else job.next_run_time  # pyright: ignore[reportUnnecessaryComparison, reportAttributeAccessIssue]
+def job_time(job: AutoClockOutJob) -> datetime | None:
+  assert job.runner is not None
+  return job.runner.next_run(job.name)
 
 
-def job_at(scheduler: Scheduler, db: Database, expected: datetime) -> bool:
+def job_at(job: AutoClockOutJob, expected: datetime) -> bool:
   """Whether the job is set for `expected`, give or take the pass's clock reads: it schedules a wait, not an instant."""
-  at = job_time(scheduler, db)
+  at = job_time(job)
   return at is not None and abs(at - expected) < timedelta(seconds=1)
 
 
 async def wait_for(predicate: Callable[[], bool]) -> None:
   async with asyncio.timeout(5):
-    while not predicate():  # noqa: ASYNC110  # polls a scheduler's job table; there is nothing to await
+    while not predicate():  # noqa: ASYNC110  # polls the runner's next times; there is nothing to await
       await asyncio.sleep(0.05)
 
 
-async def test_pass_runs_missed_rows_oldest_first(migrated: Database, noon: str, scheduler: Scheduler) -> None:
+async def test_pass_runs_missed_rows_oldest_first(migrated: Database, noon: str, job: AutoClockOutJob) -> None:
   now = datetime.now(UTC)
   r3, r2, r1 = [await add_run(migrated, now - timedelta(days=n), now - timedelta(days=n, hours=1), zone=noon) for n in (3, 2, 1)]
   e = await add_employee(migrated)
   await add_punch(migrated, e, "clock_in", now - timedelta(days=3, hours=5))
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   rows = [await run_row(migrated, r) for r in (r3, r2, r1)]
   assert [r["closed"] for r in rows] == [1, 0, 0]
   assert rows[0]["ran_at"] < rows[1]["ran_at"] < rows[2]["ran_at"]
@@ -285,30 +293,27 @@ async def test_pass_runs_missed_rows_oldest_first(migrated: Database, noon: str,
   assert row["at"] == now - timedelta(days=3, hours=1)
 
 
-async def test_pass_ignores_rows_older_than_lookback(migrated: Database, noon: str, scheduler: Scheduler) -> None:
+async def test_pass_ignores_rows_older_than_lookback(migrated: Database, noon: str, job: AutoClockOutJob) -> None:
   now = datetime.now(UTC)
   old = await add_run(migrated, now - timedelta(days=15), zone=noon)
   e = await add_employee(migrated)
   await add_punch(migrated, e, "clock_in", now - timedelta(days=16))
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   assert (await run_row(migrated, old))["ran_at"] is None
   assert await clock_outs(migrated) == []
 
 
-async def test_pass_schedules_the_next_row(migrated: Database, noon: str, scheduler: Scheduler) -> None:
-  await sync_auto_clock_out(scheduler, migrated)
+async def test_pass_schedules_the_next_row(migrated: Database, noon: str, job: AutoClockOutJob) -> None:
+  await job.main(datetime.now(UTC))
   upcoming = await future_runs(migrated)
   assert len(upcoming) == 7  # noqa: PLR2004  # the projection's 7 days
-  assert job_at(scheduler, migrated, upcoming[0]["scheduled_for"])
-  job = scheduler.get_job(f"auto_clock_out:{migrated.name}")
-  assert job.misfire_grace_time is None  # pyright: ignore[reportAttributeAccessIssue]  # as in job_time
-  assert isinstance(job.trigger, DateTrigger)  # pyright: ignore[reportAttributeAccessIssue]
+  assert job_at(job, upcoming[0]["scheduled_for"])
 
 
-async def test_pass_extends_the_projection(migrated: Database, noon: str, scheduler: Scheduler) -> None:
+async def test_pass_extends_the_projection(migrated: Database, noon: str, job: AutoClockOutJob) -> None:
   async with await connect(migrated.name) as conn:
     await conn.execute("DELETE FROM backend.auto_clock_out_runs WHERE id <> (SELECT min(id) FROM backend.auto_clock_out_runs)")
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   async with await connect(migrated.name) as conn:
     days = await (
       await conn.execute(
@@ -320,13 +325,13 @@ async def test_pass_extends_the_projection(migrated: Database, noon: str, schedu
   assert [r["d"] for r in days] == [today["d"] + timedelta(days=i) for i in range(7)]
 
 
-async def test_run_time_moved_into_the_past_runs_today_at_once(migrated: Database, noon: str, scheduler: Scheduler) -> None:
+async def test_run_time_moved_into_the_past_runs_today_at_once(migrated: Database, noon: str, job: AutoClockOutJob) -> None:
   now = datetime.now(UTC)
   zone = ZoneInfo(noon)
   e = await add_employee(migrated)
   await add_punch(migrated, e, "clock_in", now - timedelta(hours=14))  # yesterday evening in the noon zone
   await set_settings(migrated, auto_clock_out_run_time=time(0, 0, 1), auto_clock_out_stamp_time=time(0))
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   async with await connect(migrated.name) as conn:
     [ran] = await (await conn.execute("SELECT stamp, closed FROM backend.auto_clock_out_runs WHERE ran_at IS NOT NULL")).fetchall()
   today = now.astimezone(zone).date()
@@ -335,39 +340,39 @@ async def test_run_time_moved_into_the_past_runs_today_at_once(migrated: Databas
   assert row["at"] == ran["stamp"]
   upcoming = await future_runs(migrated)
   assert upcoming[0]["scheduled_for"] == datetime.combine(today + timedelta(days=1), time(0, 0, 1), zone)
-  assert job_at(scheduler, migrated, upcoming[0]["scheduled_for"])
+  assert job_at(job, upcoming[0]["scheduled_for"])
 
 
-async def test_pass_writes_a_later_stamp_on_the_runs_day(migrated: Database, noon: str, scheduler: Scheduler) -> None:
+async def test_pass_writes_a_later_stamp_on_the_runs_day(migrated: Database, noon: str, job: AutoClockOutJob) -> None:
   """A stamp later than the run lands on the run's own day and is written at once, though still ahead (owner, 2026-10-27)."""
   now = datetime.now(UTC)
   zone = ZoneInfo(noon)
   e = await add_employee(migrated)
   await add_punch(migrated, e, "clock_in", now - timedelta(hours=1))
   await set_settings(migrated, auto_clock_out_run_time=time(0, 0, 1), auto_clock_out_stamp_time=time(23))
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   [row] = await clock_outs(migrated)
   assert row["at"] == datetime.combine(now.astimezone(zone).date(), time(23), zone)
   assert row["at"] > datetime.now(UTC)
 
 
-async def test_disabled_pass_runs_nothing_and_removes_the_job(migrated: Database, noon: str, scheduler: Scheduler) -> None:
+async def test_disabled_pass_runs_nothing_and_idles_the_entry(migrated: Database, noon: str, job: AutoClockOutJob) -> None:
   now = datetime.now(UTC)
   e = await add_employee(migrated)
   await add_punch(migrated, e, "clock_in", now - timedelta(days=2))
-  await sync_auto_clock_out(scheduler, migrated)
-  assert job_time(scheduler, migrated) is not None
+  await job.main(datetime.now(UTC))
+  assert job_time(job) is not None
   missed = await add_run(migrated, now - timedelta(days=1), zone=noon)  # after the first pass, so it doesn't run there
   await set_settings(migrated, auto_clock_out_enabled=False)
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   assert await clock_outs(migrated) == []
   assert (await run_row(migrated, missed))["ran_at"] is None
-  assert job_time(scheduler, migrated) is None
+  assert job_time(job) is None
   assert await future_runs(migrated) == []
 
 
 async def test_pass_stops_at_the_first_failed_run_and_retries(
-  migrated: Database, noon: str, scheduler: Scheduler, alerts: list[tuple[str, str, dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+  migrated: Database, noon: str, job: AutoClockOutJob, alerts: list[tuple[str, str, dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
   now = datetime.now(UTC)
   older = await add_run(migrated, now - timedelta(days=2), zone=noon)
@@ -380,60 +385,60 @@ async def test_pass_stops_at_the_first_failed_run_and_retries(
 
   monkeypatch.setattr(auto_clock_out, "run_auto_clock_out", failing)
   before = datetime.now(UTC)
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   assert calls == [older]
   [(reason, _, _)] = alerts
   assert reason == f"Auto clock-out failed in {migrated.name}"
-  retry = job_time(scheduler, migrated)
+  retry = job_time(job)
   assert retry is not None
   assert before + RETRY_DELAY <= retry <= datetime.now(UTC) + RETRY_DELAY
 
 
 async def test_pass_database_error_alerts_and_retries(
-  migrated: Database, scheduler: Scheduler, alerts: list[tuple[str, str, dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+  migrated: Database, job: AutoClockOutJob, alerts: list[tuple[str, str, dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
   async def unreachable(*_args: object, **_kwargs: object) -> NoReturn:
     raise psycopg.OperationalError("connection refused")
 
   monkeypatch.setattr(auto_clock_out, "connect", unreachable)
   before = datetime.now(UTC)
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   [(reason, _, _)] = alerts
   assert reason == f"Auto clock-out failed in {migrated.name}"
-  retry = job_time(scheduler, migrated)
+  retry = job_time(job)
   assert retry is not None
   assert before + RETRY_DELAY <= retry <= datetime.now(UTC) + RETRY_DELAY
 
 
 async def test_pass_blocked_by_an_open_settings_edit_alerts_and_retries(
-  migrated: Database, noon: str, scheduler: Scheduler, alerts: list[tuple[str, str, dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+  migrated: Database, noon: str, job: AutoClockOutJob, alerts: list[tuple[str, str, dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
   monkeypatch.setattr(auto_clock_out, "_LOCK_TIMEOUT", "200ms")
   before = datetime.now(UTC)
   async with await connect(migrated.name) as editor:  # an SQL-editor transaction left open: its trigger holds the projection lock
     await editor.execute("UPDATE config.settings SET breaks_enabled = false")
-    await sync_auto_clock_out(scheduler, migrated)
+    await job.main(datetime.now(UTC))
     await editor.rollback()
   [(reason, _, _)] = alerts
   assert reason == f"Auto clock-out failed in {migrated.name}"
-  retry = job_time(scheduler, migrated)
+  retry = job_time(job)
   assert retry is not None
   assert before + RETRY_DELAY <= retry <= datetime.now(UTC) + RETRY_DELAY
 
 
-async def test_settings_notification_reschedules(migrated: Database, noon: str, scheduler: Scheduler) -> None:
-  task = asyncio.create_task(listen_for_settings(scheduler, migrated))
+async def test_settings_notification_reschedules(migrated: Database, noon: str, job: AutoClockOutJob) -> None:
+  task = asyncio.create_task(listen_for_settings(job))
   try:
-    await wait_for(lambda: job_time(scheduler, migrated) is not None)
+    await wait_for(lambda: job_time(job) is not None)
     await set_settings(migrated, auto_clock_out_run_time=time(20), auto_clock_out_stamp_time=time(20))
     expected = (await future_runs(migrated))[0]["scheduled_for"]
-    await wait_for(lambda: job_at(scheduler, migrated, expected))
+    await wait_for(lambda: job_at(job, expected))
     # Any login may NOTIFY: a malformed payload is skipped, and the listener keeps serving real changes.
     async with await connect(migrated.name, autocommit=True) as conn:
       await conn.execute(sql.SQL("NOTIFY {}, 'x'").format(sql.Identifier(NOTIFY_CHANNEL)))
     await set_settings(migrated, auto_clock_out_run_time=time(21), auto_clock_out_stamp_time=time(21))
     expected = (await future_runs(migrated))[0]["scheduled_for"]
-    await wait_for(lambda: job_at(scheduler, migrated, expected))
+    await wait_for(lambda: job_at(job, expected))
     assert not task.done()
   finally:
     task.cancel()
@@ -460,12 +465,12 @@ async def run_today_in(db: Database, zone: str, seconds: int) -> None:
 
 
 async def test_job_fires_and_rearms_when_the_backend_clock_is_ahead(
-  migrated: Database, noon: str, scheduler: Scheduler, monkeypatch: pytest.MonkeyPatch
+  migrated: Database, noon: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """The job really fires, runs its row and leaves a job scheduled, even with the backend's clock 2 s ahead of Postgres's.
+  """The job fires once its row is due and re-arms for the next row, even with the backend's clock 2 s ahead of Postgres's.
 
-  Scheduling at a raw Postgres instant fired the job 2 s early, before the row was due; the pass then re-added it at a time
-  already past, which APScheduler drops (the firing job still holds its instance slot), skipping the day.
+  Scheduled at a raw Postgres instant, every pass would fire 2 s early, find the row not yet due and reschedule the same
+  instant: a hot loop of passes until the row came due.
   """
   skew = timedelta(seconds=2)
 
@@ -475,20 +480,30 @@ async def test_job_fires_and_rearms_when_the_backend_clock_is_ahead(
     def now(cls, tz: Any = None) -> datetime:
       return datetime.now(tz) + skew
 
-  for module in (apscheduler.schedulers.base, apscheduler.executors.base, auto_clock_out):
-    monkeypatch.setattr(module, "datetime", Ahead)
-  e = await add_employee(migrated)
-  await add_punch(migrated, e, "clock_in", datetime.now(UTC) - timedelta(hours=14))  # yesterday in the noon zone
-  await run_today_in(migrated, noon, 4)
-  await sync_auto_clock_out(scheduler, migrated)
-  await wait_until_ran(migrated, 1)
-  assert len(await clock_outs(migrated)) == 1
-  await asyncio.sleep(0.2)  # let the firing job's own re-add land
-  assert job_time(scheduler, migrated) is not None
+  class AheadClock:
+    def now(self) -> datetime:
+      return datetime.now(UTC) + skew
+
+    async def sleep(self, seconds: float) -> None:
+      await asyncio.sleep(seconds)
+
+  monkeypatch.setattr(auto_clock_out, "datetime", Ahead)
+  async with registered(migrated, AheadClock()) as job:
+    e = await add_employee(migrated)
+    await add_punch(migrated, e, "clock_in", datetime.now(UTC) - timedelta(hours=14))  # yesterday in the noon zone
+    await run_today_in(migrated, noon, 4)
+    await job.main(datetime.now(UTC))
+    row = (await future_runs(migrated))[0]["scheduled_for"]
+    assert job_at(job, row + skew)  # the row's time on the backend's clock
+    await wait_until_ran(migrated, 1)
+    assert len(await clock_outs(migrated)) == 1
+    following = (await future_runs(migrated))[0]["scheduled_for"]
+    assert following > row
+    await wait_for(lambda: job_at(job, following + skew))  # the firing run's own reschedule
 
 
 async def test_row_coming_due_during_a_pass_runs_at_once(
-  migrated: Database, noon: str, scheduler: Scheduler, monkeypatch: pytest.MonkeyPatch
+  migrated: Database, noon: str, job: AutoClockOutJob, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """A row that comes due while a pass runs older rows is run straight after, not pushed to the next day's row."""
   missed = await add_run(migrated, datetime.now(UTC) - timedelta(days=1), zone=noon)
@@ -501,12 +516,12 @@ async def test_row_coming_due_during_a_pass_runs_at_once(
     return await real_run(db, run_id)
 
   monkeypatch.setattr(auto_clock_out, "run_auto_clock_out", slow_run)
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   await wait_until_ran(migrated, 2)
 
 
 async def test_run_blocked_by_an_open_transaction_alerts_and_retries(
-  migrated: Database, noon: str, scheduler: Scheduler, alerts: list[tuple[str, str, dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+  migrated: Database, noon: str, job: AutoClockOutJob, alerts: list[tuple[str, str, dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
   monkeypatch.setattr(auto_clock_out, "_LOCK_TIMEOUT", "200ms")
   missed = await add_run(migrated, datetime.now(UTC) - timedelta(days=1), zone=noon)
@@ -514,42 +529,42 @@ async def test_run_blocked_by_an_open_transaction_alerts_and_retries(
   async with await connect(migrated.name) as other:  # e.g. a second backend instance mid-run, or an open SQL-editor lock
     await other.execute("SELECT pg_advisory_xact_lock(%s)", (auto_clock_out._RUN_LOCK_KEY,))  # pyright: ignore[reportPrivateUsage]
     async with asyncio.timeout(10):
-      await sync_auto_clock_out(scheduler, migrated)
+      await job.main(datetime.now(UTC))
     await other.rollback()
   [(reason, _, _)] = alerts
   assert reason == f"Auto clock-out failed in {migrated.name}"
   assert (await run_row(migrated, missed))["ran_at"] is None
-  retry = job_time(scheduler, migrated)
+  retry = job_time(job)
   assert retry is not None
   assert before + RETRY_DELAY <= retry <= datetime.now(UTC) + RETRY_DELAY
 
 
-async def test_reenabling_after_todays_run_does_not_rerun_it(migrated: Database, noon: str, scheduler: Scheduler) -> None:
+async def test_reenabling_after_todays_run_does_not_rerun_it(migrated: Database, noon: str, job: AutoClockOutJob) -> None:
   now = datetime.now(UTC)
   e = await add_employee(migrated)
   await add_punch(migrated, e, "clock_in", now - timedelta(hours=14))
   await set_settings(migrated, auto_clock_out_run_time=time(0, 0, 1), auto_clock_out_stamp_time=time(0))
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   assert len(await clock_outs(migrated)) == 1
   await set_settings(migrated, auto_clock_out_enabled=False)
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   # Backdated before today's stamp: a rerun of today's row would close this shift.
   await add_punch(migrated, await add_employee(migrated), "clock_in", now - timedelta(hours=14))
   await set_settings(migrated, auto_clock_out_enabled=True)
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   assert len(await clock_outs(migrated)) == 1
   async with await connect(migrated.name) as conn:
     ran = await (await conn.execute("SELECT count(*) AS n FROM backend.auto_clock_out_runs WHERE ran_at IS NOT NULL")).fetchone()
   assert ran == {"n": 1}
 
 
-async def test_reenabling_after_days_off_runs_none_of_them(migrated: Database, noon: str, scheduler: Scheduler) -> None:
+async def test_reenabling_after_days_off_runs_none_of_them(migrated: Database, noon: str, job: AutoClockOutJob) -> None:
   await set_settings(migrated, auto_clock_out_enabled=False)
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   e = await add_employee(migrated)
   await add_punch(migrated, e, "clock_in", datetime.now(UTC) - timedelta(days=3))
   await set_settings(migrated, auto_clock_out_enabled=True)
-  await sync_auto_clock_out(scheduler, migrated)
+  await job.main(datetime.now(UTC))
   assert await clock_outs(migrated) == []
   async with await connect(migrated.name) as conn:
     past = await (await conn.execute("SELECT count(*) AS n FROM backend.auto_clock_out_runs WHERE scheduled_for <= now()")).fetchone()
@@ -565,3 +580,70 @@ async def test_two_rows_running_at_once_close_an_employee_once(migrated: Databas
   r2 = await add_run(migrated, local(next_day, 23), local(next_day, 18))
   assert sorted(await asyncio.gather(run_auto_clock_out(migrated, r1), run_auto_clock_out(migrated, r2))) == [0, 1]
   assert len(await clock_outs(migrated)) == 1
+
+
+async def test_pass_without_a_runner_runs_and_schedules_nothing(migrated: Database, noon: str) -> None:
+  """The module's `__main__` smoke test: a pass on an unregistered job runs due rows and leaves scheduling alone."""
+  missed = await add_run(migrated, datetime.now(UTC) - timedelta(days=1), zone=noon)
+  await AutoClockOutJob(migrated).main(datetime.now(UTC))
+  assert (await run_row(migrated, missed))["ran_at"] is not None
+
+
+async def test_runner_started_pass_failing_unexpectedly_alerts_and_retries(
+  migrated: Database, noon: str, job: AutoClockOutJob, alerts: list[tuple[str, str, dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A non-database error escapes the pass to the runner, which alerts; the job still retries after `RETRY_DELAY`."""
+  await add_run(migrated, datetime.now(UTC) - timedelta(days=1), zone=noon)
+
+  async def broken(_db: Database, _run_id: int) -> NoReturn:
+    msg = "bug"
+    raise RuntimeError(msg)
+
+  monkeypatch.setattr(auto_clock_out, "run_auto_clock_out", broken)
+  assert job.runner is not None
+  before = datetime.now(UTC)
+  job.runner.replace(job.name, Entry(job.name, At(before), job))
+  await wait_for(lambda: (at := job_time(job)) is not None and at >= before + RETRY_DELAY)
+  [(reason, _, _)] = alerts
+  assert reason == f"Scheduled job {job.name} failed"
+  retry = job_time(job)
+  assert retry is not None
+  assert retry <= datetime.now(UTC) + RETRY_DELAY
+
+
+@pytest.mark.parametrize("disturb", ["superseded", "idled", "stopping"])
+async def test_failed_pass_leaves_a_replanned_entry_or_a_stopping_runner_alone(  # noqa: PLR0917  # pytest fixtures
+  migrated: Database,
+  noon: str,
+  job: AutoClockOutJob,
+  alerts: list[tuple[str, str, dict[str, Any]]],
+  monkeypatch: pytest.MonkeyPatch,
+  caplog: pytest.LogCaptureFixture,
+  disturb: str,
+) -> None:
+  """`on_failure` retries only the definition that failed, and not once the runner is stopping; it still alerts."""
+  await add_run(migrated, datetime.now(UTC) - timedelta(days=1), zone=noon)
+  runner = job.runner
+  assert runner is not None
+  later = datetime.now(UTC) + timedelta(hours=1)
+
+  async def broken(_db: Database, _run_id: int) -> NoReturn:
+    if disturb == "superseded":  # a listener's pass re-planned the entry meanwhile
+      runner.replace(job.name, Entry(job.name, At(later), job))
+    elif disturb == "idled":
+      runner.remove(job.name)
+    else:
+      runner.request_stop()
+      await asyncio.sleep(0)  # the stop lands on the loop
+    msg = "bug"
+    raise RuntimeError(msg)
+
+  monkeypatch.setattr(auto_clock_out, "run_auto_clock_out", broken)
+  caplog.set_level(logging.INFO, logger=auto_clock_out.__name__)
+  runner.replace(job.name, Entry(job.name, At(datetime.now(UTC)), job))
+  await wait_for(lambda: bool(alerts))  # on_failure finishes without yielding once its alert is sent
+  [(reason, _, _)] = alerts
+  assert reason == f"Scheduled job {job.name} failed"
+  assert not [r for r in caplog.records if "retrying at" in r.getMessage()]
+  if disturb != "stopping":
+    assert job_time(job) == (later if disturb == "superseded" else None)
