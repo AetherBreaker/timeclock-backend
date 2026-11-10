@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
   # Local folder imports
   from .jobs import Entry
+  from .run_store import RunStore
 
 LOGGER: Final = logging.getLogger(__name__)
 
@@ -63,8 +64,10 @@ class Runner:
   cancelling a running job. One lock per name serialises runs across replacements.
   """
 
-  def __init__(self, static: Sequence[Entry], dynamic: Sequence[Entry], *, store: object = None, clock: Clock = SYSTEM_CLOCK) -> None:
-    """Validate the tables: names unique across both, every static entry scheduled."""
+  def __init__(
+    self, static: Sequence[Entry], dynamic: Sequence[Entry], *, store: RunStore | None = None, clock: Clock = SYSTEM_CLOCK
+  ) -> None:
+    """Validate the tables: names unique across both, every static entry scheduled, `catch_up` per `_check_catch_up`."""
     names = [e.name for e in (*static, *dynamic)]
     if dupes := sorted({n for n in names if names.count(n) > 1}):
       msg = f"duplicate entry names: {', '.join(dupes)}"
@@ -72,7 +75,9 @@ class Runner:
     if idle := [e.name for e in static if e.schedule is None]:
       msg = f"static entries need a schedule: {', '.join(idle)}"
       raise ValueError(msg)
-    self._store = store  # the catch-up run store; nothing records into it yet
+    self._store = store
+    for entry in (*static, *dynamic):
+      self._check_catch_up(entry)
     self._clock = clock
     self._dynamic = frozenset(e.name for e in dynamic)
     self._entries: dict[str, Entry] = {}
@@ -91,14 +96,26 @@ class Runner:
     """Log every entry with its next run and start waiting on each scheduled one."""
     self._loop = asyncio.get_running_loop()
     for entry in self._entries.values():
-      self._launch(entry)
+      self._launch(entry, starting=True)
       if (due := self._next[entry.name]) is None or entry.schedule is None:
         LOGGER.info("%s: idle", entry.name)
       else:
         LOGGER.info("%s: %s; next run %s", entry.name, entry.schedule.describe(), due.isoformat())
 
-  def _launch(self, entry: Entry) -> None:
-    """Cancel the entry's wait (never a running job) and, once started, wait on its new schedule."""
+  def _check_catch_up(self, entry: Entry) -> None:
+    """A `catch_up` entry needs the store and a cron schedule: an `At` has no latest past time to catch up."""
+    if entry.catch_up and self._store is None:
+      msg = f"{entry.name}: catch_up needs a run store"
+      raise ValueError(msg)
+    if entry.catch_up and not isinstance(entry.schedule, Cron | None):
+      msg = f"{entry.name}: catch_up needs a cron schedule"
+      raise ValueError(msg)
+
+  def _launch(self, entry: Entry, *, starting: bool = False) -> None:
+    """Cancel the entry's wait (never a running job) and, once started, wait on its new schedule.
+
+    At start, a `catch_up` entry's wait first checks its latest past time against the store (spec §5).
+    """
     if old := self._waits.pop(entry.name, None):
       old.cancel()
     for run in [r for r in self._resting if self._runs.get(r) == entry.name]:
@@ -106,9 +123,13 @@ class Runner:
     self._next[entry.name] = None
     if entry.schedule is None or self._loop is None or self._stopping:
       return
-    due = entry.schedule.next_after(self._clock.now())
+    now = self._clock.now()
+    due = entry.schedule.next_after(now)
     self._next[entry.name] = due
-    self._waits[entry.name] = asyncio.create_task(self._wait(entry, due), name=f"schedule {entry.name}")
+    check = False
+    if starting and entry.catch_up and isinstance(entry.schedule, Cron):
+      due, check = entry.schedule.latest_before(now), True
+    self._waits[entry.name] = asyncio.create_task(self._wait(entry, due, check=check), name=f"schedule {entry.name}")
 
   def replace(self, name: str, entry: Entry) -> None:
     """Replace a dynamic entry's definition; a run in progress finishes first."""
@@ -117,6 +138,7 @@ class Runner:
     if entry.name != name:
       msg = f"entry name {entry.name!r} doesn't match {name!r}"
       raise ValueError(msg)
+    self._check_catch_up(entry)
     self._entries[name] = entry
     entry.job.name, entry.job.runner = name, self
     self._launch(entry)
@@ -131,7 +153,11 @@ class Runner:
     """The entry's next scheduled time, or None when idle; `KeyError` for an undeclared name."""
     return self._next[name]
 
-  async def _wait(self, entry: Entry, due: datetime) -> None:
+  async def _wait(self, entry: Entry, due: datetime, *, check: bool = False) -> None:
+    """Run the entry at each time from `due`; with `check`, `due` is start's past catch-up time.
+
+    That first `due` needs no branch here: it doesn't sleep, and as a `catch_up` entry's latest time it runs however late.
+    """
     schedule = entry.schedule
     assert schedule is not None
     name = entry.name
@@ -164,7 +190,8 @@ class Runner:
           LOGGER.warning("skipped %s's run for %s: its previous run is still going", name, due.isoformat())
           due = schedule.next_after(due)
           continue
-      run = asyncio.create_task(self._run(entry, due), name=f"run {name}")
+      run = asyncio.create_task(self._run(entry, due, check=check), name=f"run {name}")
+      check = False
       self._runs[run] = name
       run.add_done_callback(self._runs.pop)
       # Not `await run`: cancelling this wait (replace/remove/stop) must leave the run going, and a run's exception
@@ -187,8 +214,12 @@ class Runner:
     if self._waits.get(name) is asyncio.current_task():
       del self._waits[name]
 
-  async def _run(self, entry: Entry, due: datetime) -> None:
+  async def _run(self, entry: Entry, due: datetime, *, check: bool = False) -> None:
     """Run the job, retrying per `entry.retry`; an `Exception` goes to `on_failure`, never out of here.
+
+    A `catch_up` entry's run is recorded once the job returns; failing to record fails the run. With `check` (start's
+    catch-up), it runs only when the store's period differs from `due`'s; with no record, `due` is recorded unrun so a
+    deploy never sends a past period on the spot.
 
     `CancelledError`/`KeyboardInterrupt` aren't `Exception`s: they end the run as a stop, never a failure. A superseded
     definition (replaced or removed while queued on the lock or resting) never runs or retries again.
@@ -201,7 +232,7 @@ class Runner:
       attempt = 1
       while not self._stopping and self._entries[entry.name] is entry:
         try:
-          await job.main(due)
+          await self._attempt(entry, due, check=check)
         except Exception as error:  # noqa: BLE001  # a job's error must never escape the runner
           if retry is None:
             retry_at, giving_up = None, False
@@ -231,6 +262,22 @@ class Runner:
         finally:
           self._resting.discard(task)
         attempt += 1
+
+  async def _attempt(self, entry: Entry, due: datetime, *, check: bool) -> None:
+    job, name, store = entry.job, entry.name, self._store
+    if check:
+      assert store is not None
+      if (last := await store.get(name)) is None:
+        LOGGER.info("%s: no recorded run; recording %s without running it", name, due.isoformat())
+        await store.record(name, job.period(due), due)
+        return
+      if last.period == job.period(due):
+        return
+      LOGGER.info("%s: catching up its run for %s (last run for %s)", name, due.isoformat(), last.scheduled_for.isoformat())
+    await job.main(due)
+    if entry.catch_up:
+      assert store is not None
+      await store.record(name, job.period(due), due)
 
   def _halt(self) -> None:
     self._stopping = True

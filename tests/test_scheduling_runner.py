@@ -3,82 +3,20 @@
 # Standard library imports
 import asyncio
 import logging
-from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, override
-from zoneinfo import ZoneInfo
+from datetime import UTC, timedelta
+from typing import TYPE_CHECKING, Any
 
 # Third party imports
 import pytest
+from scheduling_sim import HOURLY, NY, FakeClock, RecordingJob, ny, until
 
 # First party imports
 # Local application imports
-from timeclock_backend.scheduling import At, Cron, Entry, JobBase, Retry, Runner, jobs
+from timeclock_backend.scheduling import At, Cron, Entry, MemoryRunStore, Retry, Runner, RunRecord, jobs
 
 if TYPE_CHECKING:
   # Standard library imports
-  from collections.abc import AsyncIterator, Callable
-
-NY = ZoneInfo("America/New_York")
-HOURLY = Cron("0 * * * *", NY)
-
-
-def ny(hour: int, minute: int = 0, second: int = 0, day: int = 10) -> datetime:
-  return datetime(2026, 11, day, hour, minute, second, tzinfo=NY)
-
-
-class FakeClock:
-  """`sleep` advances `now` by the time asked plus a one-off `lag`, and yields once."""
-
-  def __init__(self, t: datetime) -> None:
-    self.t = t.astimezone(UTC)
-    self.lag = timedelta()
-
-  def now(self) -> datetime:
-    return self.t
-
-  async def sleep(self, seconds: float) -> None:
-    self.t += timedelta(seconds=seconds) + self.lag
-    self.lag = timedelta()
-    await asyncio.sleep(0)
-
-
-class RecordingJob(JobBase):
-  """Records each run's `scheduled_for` and start time; fails its first `fails` runs (-1: always); blocks on `block` if set."""
-
-  def __init__(self, clock: FakeClock, *, fails: int = 0, block: asyncio.Event | None = None) -> None:
-    self.clock = clock
-    self.fails = fails
-    self.block = block
-    self.during: Callable[[], None] | None = None  # called once, at the start of the next run
-    self.seen: list[datetime] = []
-    self.ran_at: list[datetime] = []
-    self.ended: list[datetime] = []
-    self.failures: list[tuple[int, bool]] = []
-    self.cancelled = False
-
-  @override
-  async def main(self, scheduled_for: datetime) -> None:
-    self.seen.append(scheduled_for)
-    self.ran_at.append(self.clock.now())
-    if self.during:
-      during, self.during = self.during, None
-      during()
-    try:
-      if self.block:
-        await self.block.wait()
-    except asyncio.CancelledError:
-      self.cancelled = True
-      raise
-    self.ended.append(scheduled_for)
-    if self.fails:
-      self.fails -= 1
-      msg = "boom"
-      raise RuntimeError(msg)
-
-  @override
-  async def on_failure(self, scheduled_for: datetime, error: Exception, attempt: int, giving_up: bool) -> None:
-    self.failures.append((attempt, giving_up))
-    await super().on_failure(scheduled_for, error, attempt, giving_up)
+  from collections.abc import AsyncIterator
 
 
 @pytest.fixture(autouse=True)
@@ -108,19 +46,20 @@ async def runners() -> AsyncIterator[list[Runner]]:
     await runner.stop(0)
 
 
-async def until(condition: Callable[[], bool]) -> None:
-  for _ in range(100_000):
-    if condition():
-      return
-    await asyncio.sleep(0)
-  raise AssertionError("condition never held")
-
-
-async def started(runners: list[Runner], clock: FakeClock, static: list[Entry], dynamic: list[Entry] | None = None) -> Runner:
-  runner = Runner(static, dynamic or [], clock=clock)
+async def started(
+  runners: list[Runner], clock: FakeClock, static: list[Entry], dynamic: list[Entry] | None = None, store: MemoryRunStore | None = None
+) -> Runner:
+  runner = Runner(static, dynamic or [], store=store, clock=clock)
   runners.append(runner)
   await runner.start()
   return runner
+
+
+def done_at_5(job: RecordingJob) -> MemoryRunStore:
+  """A store with the 05:00 run recorded, so starting at 05:xx has nothing to catch up."""
+  store = MemoryRunStore()
+  store.records["hourly"] = RunRecord(job.period(ny(5)), ny(5))
+  return store
 
 
 async def test_cron_entry_runs_at_each_time(clock: FakeClock, runners: list[Runner]) -> None:
@@ -145,7 +84,7 @@ async def test_late_run_of_a_catch_up_entry_still_runs(clock: FakeClock, runners
   clock.t = ny(5, 59, 30)
   clock.lag = timedelta(seconds=61)
   job = RecordingJob(clock)
-  await started(runners, clock, [Entry("hourly", HOURLY, job, catch_up=True)])
+  await started(runners, clock, [Entry("hourly", HOURLY, job, catch_up=True)], store=done_at_5(job))
   await until(lambda: len(job.seen) == 1)
   assert job.seen == [ny(6)]
   assert job.ran_at == [ny(6, 1, 1)]
@@ -256,13 +195,17 @@ async def test_duplicate_names_are_rejected(clock: FakeClock) -> None:
 
 async def test_stop_mid_run_neither_alerts_nor_records(clock: FakeClock, alerts: list[tuple[str, str, dict[str, Any]]]) -> None:
   job = RecordingJob(clock, block=asyncio.Event())  # never set
-  runner = Runner([Entry("hourly", HOURLY, job)], [], clock=clock)
+  store = done_at_5(job)
+  before = store.records["hourly"]
+  runner = Runner([Entry("hourly", HOURLY, job, catch_up=True)], [], store=store, clock=clock)
   await runner.start()
   await until(lambda: len(job.seen) == 1)
   await runner.stop(5)
+  assert job.seen == [ny(6)]
   assert job.cancelled
   assert job.failures == []
   assert alerts == []
+  assert store.records == {"hourly": before}
 
 
 async def test_request_stop_from_another_thread_stops_new_runs(clock: FakeClock, runners: list[Runner]) -> None:
@@ -307,7 +250,7 @@ async def test_late_wake_of_a_catch_up_entry_runs_the_latest_missed_time(
   clock.t = ny(5, 59, 30)
   clock.lag = timedelta(hours=2, minutes=30)  # wakes at 08:30
   job = RecordingJob(clock)
-  await started(runners, clock, [Entry("hourly", HOURLY, job, catch_up=True)])
+  await started(runners, clock, [Entry("hourly", HOURLY, job, catch_up=True)], store=done_at_5(job))
   await until(lambda: job.seen != [])
   assert job.seen == [ny(8)]
   assert job.ran_at == [ny(8, 30)]
