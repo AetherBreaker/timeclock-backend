@@ -72,9 +72,11 @@ class RecordingJob(JobBase):
       raise RuntimeError(msg)
 
   @override
-  async def on_failure(self, scheduled_for: datetime, error: Exception, attempt: int, giving_up: bool) -> None:
+  async def on_failure(
+    self, scheduled_for: datetime, error: Exception, attempt: int, giving_up: bool, *, restart_before: datetime | None = None
+  ) -> None:
     self.failures.append((attempt, giving_up))
-    await super().on_failure(scheduled_for, error, attempt, giving_up)
+    await super().on_failure(scheduled_for, error, attempt, giving_up, restart_before=restart_before)
 
 
 async def until(condition: Callable[[], bool]) -> None:

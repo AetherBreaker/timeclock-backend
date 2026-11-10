@@ -240,3 +240,60 @@ async def test_pg_run_store_round_trips(fresh_database: Database) -> None:
   assert first["completed_at"] is not None
   assert second["completed_at"] > first["completed_at"]
   assert await store.get("other") is None
+
+
+@pytest.mark.parametrize(
+  ("retry", "catch_up", "stopping", "line"),
+  [
+    (Retry(timedelta(minutes=15), 1), True, False, True),
+    (None, True, False, True),
+    (Retry(timedelta(minutes=15), 1), False, False, False),
+    (None, False, False, False),
+    (None, True, True, False),
+    (Retry(timedelta(minutes=15), 1), True, True, False),
+  ],
+)
+async def test_final_failure_of_a_catch_up_entry_says_a_restart_catches_it_up(  # noqa: PLR0917  # parametrized
+  clock: FakeClock,
+  runners: list[Runner],
+  monkeypatch: pytest.MonkeyPatch,
+  retry: Retry | None,
+  catch_up: bool,
+  stopping: bool,
+  line: bool,
+) -> None:
+  alerts: list[str] = []
+  monkeypatch.setattr(jobs, "alert", lambda _reason, details, **_: alerts.append(details))
+  store = MemoryRunStore()
+  store.records["weekly"] = RunRecord("2026-11-02", ny(6, day=2))
+  block = asyncio.Event() if stopping else None
+  job = WeeklyJob(clock, fails=-1, block=block)
+  runner = await started(runners, clock, store, Entry("weekly", MONDAYS, job, catch_up=catch_up, retry=retry))
+  if stopping:
+    await until(lambda: job.seen != [])
+    runner.request_stop()
+    for _ in range(10):
+      await asyncio.sleep(0)
+    assert block is not None
+    block.set()
+  await until(lambda: any(f[1] or retry is None for f in job.failures))
+  await settle()
+  assert alerts
+  expected = (
+    f"Not recorded: a restart before {MONDAYS.next_after(ny(6, day=9)).isoformat()} runs it once; after that this run is skipped."
+  )
+  assert any(expected in a for a in alerts) is line
+
+
+async def test_a_non_final_failure_of_a_catch_up_entry_does_not_say_it(
+  clock: FakeClock, runners: list[Runner], monkeypatch: pytest.MonkeyPatch
+) -> None:
+  alerts: list[str] = []
+  monkeypatch.setattr(jobs, "alert", lambda _reason, details, **_: alerts.append(details))
+  store = MemoryRunStore()
+  store.records["weekly"] = RunRecord("2026-11-02", ny(6, day=2))
+  job = WeeklyJob(clock, fails=-1)
+  await started(runners, clock, store, Entry("weekly", MONDAYS, job, catch_up=True, retry=Retry(timedelta(minutes=15), 4)))
+  await until(lambda: alerts != [])
+  assert job.failures == [(1, False)]
+  assert "Not recorded" not in alerts[0]

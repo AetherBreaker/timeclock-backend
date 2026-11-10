@@ -164,9 +164,11 @@ class AutoClockOutJob(JobBase):
         LOGGER.info("next auto clock-out pass in %s at %s", db.name, next_at)
 
   @override
-  async def on_failure(self, scheduled_for: datetime, error: Exception, attempt: int, giving_up: bool) -> None:
+  async def on_failure(
+    self, scheduled_for: datetime, error: Exception, attempt: int, giving_up: bool, *, restart_before: datetime | None = None
+  ) -> None:
     """Alert as every job does, then retry after `RETRY_DELAY` as a database error does, so a bug can't end the clock-outs."""
-    await super().on_failure(scheduled_for, error, attempt, giving_up)
+    await super().on_failure(scheduled_for, error, attempt, giving_up, restart_before=restart_before)
     runner = self.runner
     assert runner is not None  # only a runner calls this, after registering the job
     # A newer pass already re-planned a superseded entry: its next run is no longer the one that failed.

@@ -41,9 +41,16 @@ class JobBase(ABC):
     """The key a run is recorded under."""
     return scheduled_for.isoformat()
 
-  async def on_failure(self, scheduled_for: datetime, error: Exception, attempt: int, giving_up: bool) -> None:
-    """Alert on a run's first failure and when retrying gives up; log the retries between."""
+  async def on_failure(
+    self, scheduled_for: datetime, error: Exception, attempt: int, giving_up: bool, *, restart_before: datetime | None = None
+  ) -> None:
+    """Alert on a run's first failure and when retrying gives up; log the retries between.
+
+    `restart_before` is set when this failure is final for a `catch_up` entry: a restart before then still runs the run.
+    """
     details = f"Run for {scheduled_for.isoformat()}, attempt {attempt}{' (giving up)' if giving_up else ''}:\n\n"
+    if restart_before is not None:
+      details += f"Not recorded: a restart before {restart_before.isoformat()} runs it once; after that this run is skipped.\n\n"
     if attempt == 1 or giving_up:
       LOGGER.error("scheduled job %s failed (attempt %d)", self.name, attempt, exc_info=error)
       # wait=False: the default joins the senders, blocking the loop for up to ~21 s.

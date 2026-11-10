@@ -254,8 +254,10 @@ class Runner:
               or self._stopping
               or self._entries[entry.name] is not entry
             )
+          # A final failure of a catch_up entry is caught up only by a restart before its next time (spec §7.2.5).
+          final = (giving_up or retry is None) and not self._stopping
           try:
-            await job.on_failure(due, error, attempt, giving_up)
+            await job.on_failure(due, error, attempt, giving_up, restart_before=next_time if entry.catch_up and final else None)
           except Exception:
             LOGGER.exception("on_failure of %s raised", entry.name)
           if retry_at is None or giving_up:
