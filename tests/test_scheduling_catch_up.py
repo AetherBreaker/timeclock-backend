@@ -2,7 +2,7 @@
 
 # Standard library imports
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, override
 
 # Third party imports
@@ -12,7 +12,8 @@ from scheduling_sim import NY, FakeClock, RecordingJob, ny, until
 # First party imports
 # Local application imports
 from timeclock_backend.bootstrap import bootstrap
-from timeclock_backend.scheduling import At, Cron, Entry, MemoryRunStore, PgRunStore, Runner, RunRecord
+from timeclock_backend.databases import connect
+from timeclock_backend.scheduling import At, Cron, Entry, MemoryRunStore, PgRunStore, Retry, Runner, RunRecord, jobs
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -25,11 +26,12 @@ MONDAYS = Cron("0 6 * * MON", NY)
 
 
 class WeeklyJob(RecordingJob):
-  """A run's period is its Monday's date, as the payroll report's is."""
+  """A run's period is its week's Monday, as the payroll report's is."""
 
   @override
   def period(self, scheduled_for: datetime) -> str:
-    return scheduled_for.astimezone(NY).date().isoformat()
+    day = scheduled_for.astimezone(NY).date()
+    return (day - timedelta(days=day.weekday())).isoformat()
 
 
 class FailingStore(MemoryRunStore):
@@ -109,6 +111,43 @@ async def test_cron_change_within_a_week_does_not_resend(clock: FakeClock, runne
   assert store.records["weekly"] == done
 
 
+async def test_cron_moved_later_on_the_day_of_its_run_does_not_resend(runners: list[Runner]) -> None:
+  clock = FakeClock(ny(7, day=9))  # Monday, between this week's 06:00 run and the new 09:00
+  store = MemoryRunStore()
+  store.records["weekly"] = RunRecord("2026-11-09", ny(6, day=9))
+  job = WeeklyJob(clock)
+  runner = await started(runners, clock, store, Entry("weekly", Cron("0 9 * * MON", NY), job, catch_up=True))
+  await until(lambda: job.seen != [])
+  assert job.seen == [ny(9, day=16)]  # not last week's at start, not this week's again at 09:00
+  assert store.records["weekly"] == RunRecord("2026-11-16", ny(9, day=16))
+  await until(lambda: runner.next_run("weekly") == ny(9, day=23))
+
+
+async def test_cron_moved_to_a_later_day_midweek_does_not_resend(runners: list[Runner]) -> None:
+  clock = FakeClock(ny(12, day=11))  # Wednesday; Monday's ran, the cron is now Fridays
+  store = MemoryRunStore()
+  store.records["weekly"] = RunRecord("2026-11-09", ny(6, day=9))
+  job = WeeklyJob(clock)
+  await started(runners, clock, store, Entry("weekly", Cron("0 6 * * FRI", NY), job, catch_up=True))
+  await until(lambda: job.seen != [])
+  assert job.seen == [ny(6, day=20)]  # Friday the 13th is this week's: skipped
+  assert store.records["weekly"] == RunRecord("2026-11-16", ny(6, day=20))
+
+
+async def test_a_catch_up_overrunning_the_next_time_runs_it_late(runners: list[Runner]) -> None:
+  clock = FakeClock(ny(5, 59, 30, day=16))  # two weeks unsent; the catch-up for the 9th takes 2 minutes
+  store = MemoryRunStore()
+  store.records["weekly"] = RunRecord("2026-11-02", ny(6, day=2))
+  job = WeeklyJob(clock)
+  job.during = lambda: setattr(clock, "t", clock.t + timedelta(minutes=2))
+  runner = await started(runners, clock, store, Entry("weekly", MONDAYS, job, catch_up=True))
+  await until(lambda: job.seen[1:] != [])
+  assert job.seen == [ny(6, day=9), ny(6, day=16)]
+  assert job.ran_at == [ny(5, 59, 30, day=16), ny(6, 1, 30, day=16)]
+  assert store.records["weekly"] == RunRecord("2026-11-16", ny(6, day=16))
+  await until(lambda: runner.next_run("weekly") == ny(6, day=23))
+
+
 async def test_restart_just_after_the_time_sends_once(runners: list[Runner]) -> None:
   clock = FakeClock(ny(6, 0, 30, day=16))  # Monday, 30 s past the time; last week's is recorded
   store = MemoryRunStore()
@@ -134,6 +173,24 @@ async def test_failed_run_is_not_recorded(clock: FakeClock, runners: list[Runner
   assert job.seen == [ny(6, day=9)]
   assert job.failures == [(1, False)]
   assert store.records["weekly"] == before
+
+
+async def test_a_catch_up_failing_once_succeeds_on_retry(
+  clock: FakeClock, runners: list[Runner], monkeypatch: pytest.MonkeyPatch
+) -> None:
+  alerts: list[str] = []
+  monkeypatch.setattr(jobs, "alert", lambda reason, *_, **__: alerts.append(reason))
+  store = MemoryRunStore()
+  store.records["weekly"] = RunRecord("2026-11-02", ny(6, day=2))
+  job = WeeklyJob(clock, fails=1)
+  await started(runners, clock, store, Entry("weekly", MONDAYS, job, catch_up=True, retry=Retry(timedelta(minutes=15), 4)))
+  await until(lambda: job.ended[1:] != [])
+  await settle()
+  assert job.seen == [ny(6, day=9)] * 2
+  assert job.ran_at == [ny(5, 30), ny(5, 45)]
+  assert job.failures == [(1, False)]
+  assert alerts == ["Scheduled job weekly failed"]
+  assert store.records["weekly"] == RunRecord("2026-11-09", ny(6, day=9))
 
 
 async def test_a_failure_to_record_is_a_failed_run(clock: FakeClock, runners: list[Runner]) -> None:
@@ -172,7 +229,14 @@ async def test_pg_run_store_round_trips(fresh_database: Database) -> None:
   await bootstrap([fresh_database])
   store = PgRunStore(fresh_database)
   assert await store.get("weekly") is None
+  sql = "SELECT completed_at FROM backend.scheduled_runs WHERE name = 'weekly'"
   await store.record("weekly", "2026-11-02", ny(6, day=2))
+  async with await connect(fresh_database.name) as conn:
+    [first] = await (await conn.execute(sql)).fetchall()
   await store.record("weekly", "2026-11-09", ny(6, day=9))
   assert await store.get("weekly") == RunRecord("2026-11-09", ny(6, day=9))
+  async with await connect(fresh_database.name) as conn:
+    [second] = await (await conn.execute(sql)).fetchall()
+  assert first["completed_at"] is not None
+  assert second["completed_at"] > first["completed_at"]
   assert await store.get("other") is None

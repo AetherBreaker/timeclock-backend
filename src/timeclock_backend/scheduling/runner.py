@@ -200,7 +200,9 @@ class Runner:
       if isinstance(schedule, At):
         break
       now = self._clock.now()
-      if missed := _fires(schedule, schedule.next_after(due), now):
+      # A catch_up entry never skips a time its run overran: the late wake above runs the latest one, and `_attempt`'s
+      # period check stops a resend. Others skip and log them.
+      if not entry.catch_up and (missed := _fires(schedule, schedule.next_after(due), now)):
         LOGGER.warning(
           "skipped %s's %d run(s) for %s through %s: the run for %s was still going",
           name,
@@ -209,7 +211,8 @@ class Runner:
           missed[-1].isoformat(),
           due.isoformat(),
         )
-      due = schedule.next_after(max(now, due))  # max(): a clock stepped back past `due` mustn't run it again
+      # max(): a clock stepped back past `due` mustn't run it again (a catch_up entry's period check covers it).
+      due = schedule.next_after(due if entry.catch_up else max(now, due))
     self._next[name] = None
     if self._waits.get(name) is asyncio.current_task():
       del self._waits[name]
@@ -217,9 +220,10 @@ class Runner:
   async def _run(self, entry: Entry, due: datetime, *, check: bool = False) -> None:
     """Run the job, retrying per `entry.retry`; an `Exception` goes to `on_failure`, never out of here.
 
-    A `catch_up` entry's run is recorded once the job returns; failing to record fails the run. With `check` (start's
-    catch-up), it runs only when the store's period differs from `due`'s; with no record, `due` is recorded unrun so a
-    deploy never sends a past period on the spot.
+    A `catch_up` entry's attempt is skipped when the store already holds `due`'s period, and recorded once the job
+    returns; failing to record fails the run. With `check` (start's catch-up) it also needs `due` past the record's time,
+    so a cron moved later in the week can't move the record back and resend; with no record, `due` is recorded unrun so
+    a deploy never sends a past period on the spot.
 
     `CancelledError`/`KeyboardInterrupt` aren't `Exception`s: they end the run as a stop, never a failure. A superseded
     definition (replaced or removed while queued on the lock or resting) never runs or retries again.
@@ -265,15 +269,18 @@ class Runner:
 
   async def _attempt(self, entry: Entry, due: datetime, *, check: bool) -> None:
     job, name, store = entry.job, entry.name, self._store
-    if check:
+    if entry.catch_up:
       assert store is not None
-      if (last := await store.get(name)) is None:
+      last, period = await store.get(name), job.period(due)
+      if last is None and check:
         LOGGER.info("%s: no recorded run; recording %s without running it", name, due.isoformat())
-        await store.record(name, job.period(due), due)
+        await store.record(name, period, due)
         return
-      if last.period == job.period(due):
+      if last is not None and (last.period == period or (check and due <= last.scheduled_for)):
+        LOGGER.info("skipped %s's run for %s: its run for %s already covers it", name, due.isoformat(), last.scheduled_for.isoformat())
         return
-      LOGGER.info("%s: catching up its run for %s (last run for %s)", name, due.isoformat(), last.scheduled_for.isoformat())
+      if check:
+        LOGGER.info("%s: catching up its run for %s", name, due.isoformat())
     await job.main(due)
     if entry.catch_up:
       assert store is not None
