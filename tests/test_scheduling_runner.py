@@ -3,8 +3,8 @@
 # Standard library imports
 import asyncio
 import logging
-from datetime import UTC, timedelta
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any, override
 
 # Third party imports
 import pytest
@@ -366,3 +366,31 @@ async def test_clock_stepping_back_during_a_run_does_not_repeat_it(clock: FakeCl
   block.set()
   await until(lambda: job.seen[1:] != [])
   assert job.seen == [ny(6), ny(7)]
+
+
+async def test_a_successful_run_is_logged(clock: FakeClock, runners: list[Runner], caplog: pytest.LogCaptureFixture) -> None:
+  caplog.set_level(logging.INFO)
+  job = RecordingJob(clock)
+  await started(runners, clock, [Entry("hourly", HOURLY, job)])
+  await until(lambda: job.seen != [])
+  await until(lambda: "hourly: run for 2026-11-10T06:00:00-05:00 done" in caplog.messages)
+
+
+async def test_an_error_in_a_wait_task_reaches_the_loop_handler(clock: FakeClock, runners: list[Runner]) -> None:
+  """A wait that dies silently would end its entry's schedule, so its exception goes to the loop's handler."""
+
+  class Flaky(Cron):
+    @override
+    def next_after(self, t: datetime) -> datetime:
+      if t >= ny(6):  # the first call plans the 06:00 run; the call after that run is the one that fails
+        msg = "bad schedule"
+        raise RuntimeError(msg)
+      return super().next_after(t)
+
+  caught: list[dict[str, Any]] = []
+  asyncio.get_running_loop().set_exception_handler(lambda _loop, context: caught.append(context))
+  job = RecordingJob(clock)
+  await started(runners, clock, [Entry("hourly", Flaky("0 * * * *", NY), job)])
+  await until(lambda: caught != [])
+  assert isinstance(caught[0]["exception"], RuntimeError)
+  assert caught[0]["message"] == "schedule hourly failed"

@@ -2,6 +2,7 @@
 
 # Standard library imports
 import asyncio
+import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, override
 
@@ -203,7 +204,10 @@ async def test_a_failure_to_record_is_a_failed_run(clock: FakeClock, runners: li
   assert job.failures == [(1, False)]
 
 
-async def test_a_scheduled_run_of_a_catch_up_entry_is_recorded(clock: FakeClock, runners: list[Runner]) -> None:
+async def test_a_scheduled_run_of_a_catch_up_entry_is_recorded(
+  clock: FakeClock, runners: list[Runner], caplog: pytest.LogCaptureFixture
+) -> None:
+  caplog.set_level(logging.INFO)
   store = MemoryRunStore()
   store.records["daily"] = RunRecord(ny(6, day=9).isoformat(), ny(6, day=9))
   job = RecordingJob(clock)
@@ -212,6 +216,7 @@ async def test_a_scheduled_run_of_a_catch_up_entry_is_recorded(clock: FakeClock,
   await settle()
   assert job.seen == [ny(6)]  # the loop's own run, nothing caught up
   assert store.records["daily"] == RunRecord(ny(6).isoformat(), ny(6))
+  assert f"daily: run for {ny(6).isoformat()} done" in caplog.messages
 
 
 async def test_catch_up_needs_a_store_and_a_cron(clock: FakeClock) -> None:

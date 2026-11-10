@@ -57,6 +57,12 @@ def _fires(schedule: Cron, first: datetime, last: datetime) -> list[datetime]:
   return fires
 
 
+def _surface_task_failure(task: asyncio.Task[None]) -> None:
+  """Done callback: hand a wait's unexpected exception to the loop handler (as `startup` does for its tasks)."""
+  if not task.cancelled() and (exc := task.exception()) is not None:
+    task.get_loop().call_exception_handler({"message": f"{task.get_name()} failed", "exception": exc, "task": task})
+
+
 class Runner:
   """Runs the static and dynamic entries; only dynamic ones can be replaced or removed while it runs.
 
@@ -129,7 +135,10 @@ class Runner:
     check = False
     if starting and entry.catch_up and isinstance(entry.schedule, Cron):
       due, check = entry.schedule.latest_before(now), True
-    self._waits[entry.name] = asyncio.create_task(self._wait(entry, due, check=check), name=f"schedule {entry.name}")
+    wait = asyncio.create_task(self._wait(entry, due, check=check), name=f"schedule {entry.name}")
+    # An unexpected error would end this entry's schedule silently; the loop handler makes it fatal and the restart re-plans.
+    wait.add_done_callback(_surface_task_failure)
+    self._waits[entry.name] = wait
 
   def replace(self, name: str, entry: Entry) -> None:
     """Replace a dynamic entry's definition; a run in progress finishes first."""
@@ -292,6 +301,7 @@ class Runner:
     if entry.catch_up:
       assert store is not None
       await store.record(name, job.period(due), due)
+    LOGGER.info("%s: run for %s done", name, job.period(due) if entry.catch_up else due.isoformat())
 
   def _halt(self) -> None:
     self._stopping = True
