@@ -47,6 +47,15 @@ class _SystemClock:
 SYSTEM_CLOCK: Final[Clock] = _SystemClock()
 
 
+def _fires(schedule: Cron, first: datetime, last: datetime) -> list[datetime]:
+  """`schedule`'s times from its time `first` through `last`."""
+  fires: list[datetime] = []
+  while first <= last:
+    fires.append(first)
+    first = schedule.next_after(first)
+  return fires
+
+
 class Runner:
   """Runs the static and dynamic entries; only dynamic ones can be replaced or removed while it runs.
 
@@ -89,9 +98,11 @@ class Runner:
         LOGGER.info("%s: %s; next run %s", entry.name, entry.schedule.describe(), due.isoformat())
 
   def _launch(self, entry: Entry) -> None:
-    """Cancel the entry's wait (never its run) and, once started, wait on its new schedule."""
+    """Cancel the entry's wait (never a running job) and, once started, wait on its new schedule."""
     if old := self._waits.pop(entry.name, None):
       old.cancel()
+    for run in [r for r in self._resting if self._runs.get(r) == entry.name]:
+      run.cancel()  # a superseded definition's retries end now, freeing the lock for the new one
     self._next[entry.name] = None
     if entry.schedule is None or self._loop is None or self._stopping:
       return
@@ -131,10 +142,24 @@ class Runner:
         await self._clock.sleep(min(left, MAX_SLEEP))
       now = self._clock.now()
       if isinstance(schedule, Cron):  # an At always runs, however late, since nothing else would reschedule it
-        if not entry.catch_up and now - due > LATE:
-          LOGGER.warning("skipped %s's run for %s: woke %s late", name, due.isoformat(), now - due)
+        # A late wake may span several times: run the latest if it's within LATE (any lateness with catch_up), log the rest.
+        # max(): the spring-forward gap's time runs at the gap's end, which latest_before may place before it.
+        latest = max(due, schedule.latest_before(now))
+        run_latest = entry.catch_up or now - latest <= LATE
+        missed = _fires(schedule, due, latest)[: -1 if run_latest else None]
+        if missed:
+          LOGGER.warning(
+            "skipped %s's %d run(s) for %s through %s: woke at %s",
+            name,
+            len(missed),
+            missed[0].isoformat(),
+            missed[-1].isoformat(),
+            now.isoformat(),
+          )
+        if not run_latest:
           due = schedule.next_after(now)
           continue
+        due = latest
         if lock.locked():  # a replaced definition's run is still going
           LOGGER.warning("skipped %s's run for %s: its previous run is still going", name, due.isoformat())
           due = schedule.next_after(due)
@@ -147,10 +172,17 @@ class Runner:
       await asyncio.wait((run,))
       if isinstance(schedule, At):
         break
-      ran_for, due = due, schedule.next_after(due)
-      if due <= (now := self._clock.now()):
-        LOGGER.warning("skipped %s's run for %s: the run for %s was still going", name, due.isoformat(), ran_for.isoformat())
-        due = schedule.next_after(now)
+      now = self._clock.now()
+      if missed := _fires(schedule, schedule.next_after(due), now):
+        LOGGER.warning(
+          "skipped %s's %d run(s) for %s through %s: the run for %s was still going",
+          name,
+          len(missed),
+          missed[0].isoformat(),
+          missed[-1].isoformat(),
+          due.isoformat(),
+        )
+      due = schedule.next_after(now)
     self._next[name] = None
     if self._waits.get(name) is asyncio.current_task():
       del self._waits[name]
@@ -158,7 +190,8 @@ class Runner:
   async def _run(self, entry: Entry, due: datetime) -> None:
     """Run the job, retrying per `entry.retry`; an `Exception` goes to `on_failure`, never out of here.
 
-    `CancelledError`/`KeyboardInterrupt` aren't `Exception`s: they end the run as a stop, never a failure.
+    `CancelledError`/`KeyboardInterrupt` aren't `Exception`s: they end the run as a stop, never a failure. A superseded
+    definition (replaced or removed while queued on the lock or resting) never runs or retries again.
     """
     job = entry.job
     retry = entry.retry
@@ -166,7 +199,7 @@ class Runner:
     next_time = entry.schedule.next_after(due) if isinstance(entry.schedule, Cron) else None
     async with self._locks[entry.name]:
       attempt = 1
-      while not self._stopping:
+      while not self._stopping and self._entries[entry.name] is entry:
         try:
           await job.main(due)
         except Exception as error:  # noqa: BLE001  # a job's error must never escape the runner
@@ -179,7 +212,7 @@ class Runner:
             await job.on_failure(due, error, attempt, giving_up)
           except Exception:
             LOGGER.exception("on_failure of %s raised", entry.name)
-          if retry_at is None or giving_up:
+          if retry_at is None or giving_up or self._stopping:  # don't rest through a shutdown
             return
         else:
           return

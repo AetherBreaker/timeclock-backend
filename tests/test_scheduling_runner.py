@@ -283,3 +283,118 @@ async def test_start_logs_every_entry_with_its_next_run(
   assert "At 06:00 on Monday" in caplog.text
   assert ny(6, day=16).isoformat() in caplog.text
   assert "idle" in caplog.text
+
+
+async def test_late_wake_runs_the_latest_time_within_late(
+  clock: FakeClock, runners: list[Runner], caplog: pytest.LogCaptureFixture
+) -> None:
+  clock.t = ny(5, 59, 30)
+  clock.lag = timedelta(hours=1, seconds=30)  # the first sleep wakes at 07:00:30
+  job = RecordingJob(clock)
+  await started(runners, clock, [Entry("hourly", HOURLY, job)])
+  await until(lambda: job.seen != [])
+  assert job.seen == [ny(7)]
+  assert job.ran_at == [ny(7, 0, 30)]
+  skips = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage()]
+  assert len(skips) == 1
+  assert "1 run(s)" in skips[0]
+  assert ny(6).isoformat() in skips[0]
+
+
+async def test_late_wake_of_a_catch_up_entry_runs_the_latest_missed_time(
+  clock: FakeClock, runners: list[Runner], caplog: pytest.LogCaptureFixture
+) -> None:
+  clock.t = ny(5, 59, 30)
+  clock.lag = timedelta(hours=2, minutes=30)  # wakes at 08:30
+  job = RecordingJob(clock)
+  await started(runners, clock, [Entry("hourly", HOURLY, job, catch_up=True)])
+  await until(lambda: job.seen != [])
+  assert job.seen == [ny(8)]
+  assert job.ran_at == [ny(8, 30)]
+  skips = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage()]
+  assert len(skips) == 1
+  assert "2 run(s)" in skips[0]
+  assert ny(6).isoformat() in skips[0]
+  assert ny(7).isoformat() in skips[0]
+
+
+async def test_overrun_spanning_two_times_logs_both(clock: FakeClock, runners: list[Runner], caplog: pytest.LogCaptureFixture) -> None:
+  block = asyncio.Event()
+  job = RecordingJob(clock, block=block)
+  await started(runners, clock, [Entry("hourly", HOURLY, job)])
+  await until(lambda: job.seen != [])
+  clock.t += timedelta(hours=2, minutes=10)  # 07:00 and 08:00 pass during the run
+  block.set()
+  await until(lambda: job.seen[1:] != [])
+  assert job.seen == [ny(6), ny(9)]
+  skips = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage()]
+  assert len(skips) == 1
+  assert "2 run(s)" in skips[0]
+  assert ny(7).isoformat() in skips[0]
+  assert ny(8).isoformat() in skips[0]
+
+
+async def test_removing_an_at_queued_behind_a_run_drops_it(clock: FakeClock, runners: list[Runner]) -> None:
+  block = asyncio.Event()
+  job = RecordingJob(clock, block=block)
+  runner = await started(runners, clock, [], [Entry("d", At(ny(6)), job)])
+  await until(lambda: job.seen != [])
+  runner.replace("d", Entry("d", At(ny(6, 0, 1)), job))
+  for _ in range(100):  # its run is created and queues on the lock
+    await asyncio.sleep(0)
+  runner.remove("d")
+  block.set()
+  for _ in range(1000):
+    await asyncio.sleep(0)
+  assert job.seen == [ny(6)]
+  assert runner.next_run("d") is None
+
+
+async def test_replacing_an_at_queued_behind_a_run_runs_only_the_last(clock: FakeClock, runners: list[Runner]) -> None:
+  block = asyncio.Event()
+  job = RecordingJob(clock, block=block)
+  runner = await started(runners, clock, [], [Entry("d", At(ny(6)), job)])
+  await until(lambda: job.seen != [])
+  runner.replace("d", Entry("d", At(ny(6, 0, 1)), job))
+  for _ in range(100):
+    await asyncio.sleep(0)
+  runner.replace("d", Entry("d", At(ny(6, 0, 2)), job))
+  for _ in range(100):
+    await asyncio.sleep(0)
+  block.set()
+  for _ in range(1000):
+    await asyncio.sleep(0)
+  assert job.seen == [ny(6), ny(6, 0, 2)]
+
+
+async def test_removing_an_entry_ends_its_pending_retries(clock: FakeClock, runners: list[Runner]) -> None:
+  job = RecordingJob(clock, fails=-1)
+  runner = await started(runners, clock, [], [Entry("d", Cron("0 6 * * *", NY), job, retry=Retry(timedelta(minutes=15), 4))])
+  await until(lambda: job.failures != [])  # now resting before its first retry
+  runner.remove("d")
+  removed_at = clock.now()
+  other = RecordingJob(clock)
+  runner.replace("d", Entry("d", At(removed_at), other))
+  await until(lambda: other.seen != [])
+  assert other.ran_at == [removed_at]  # not held behind the removed entry's rest
+  for _ in range(1000):
+    await asyncio.sleep(0)
+  assert job.ran_at == [ny(6)]
+  assert job.failures == [(1, False)]
+
+
+async def test_a_failure_after_request_stop_does_not_rest_for_a_retry(clock: FakeClock, runners: list[Runner]) -> None:
+  block = asyncio.Event()
+  job = RecordingJob(clock, fails=-1, block=block)
+  runner = await started(runners, clock, [Entry("hourly", HOURLY, job, retry=Retry(timedelta(minutes=15), 4))])
+  await until(lambda: job.seen != [])
+  runner.request_stop()
+  for _ in range(10):
+    await asyncio.sleep(0)
+  stopped_at = clock.now()
+  block.set()
+  await until(lambda: job.failures != [])
+  for _ in range(1000):
+    await asyncio.sleep(0)
+  assert clock.now() == stopped_at  # a rest would have advanced the fake clock
+  assert job.ran_at == [ny(6)]
