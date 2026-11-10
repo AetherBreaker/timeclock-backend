@@ -141,7 +141,7 @@ class AutoClockOutJob(JobBase):
           await run_auto_clock_out(db, row["id"])
         async with await connect(db.name, autocommit=True) as conn:
           # A wait, not Postgres's instant: the backend's clock may differ from the server's. A row that came due during the
-          # runs has a negative wait; its past `At` runs as soon as this run ends.
+          # runs has a negative wait; its past `At` runs as soon as this pass ends.
           upcoming = await (
             await conn.execute(
               "SELECT min(scheduled_for) - now() AS wait FROM backend.auto_clock_out_runs WHERE ran_at IS NULL AND scheduled_for > %s",
@@ -168,9 +168,7 @@ class AutoClockOutJob(JobBase):
     """Alert as every job does, then retry after `RETRY_DELAY` as a database error does, so a bug can't end the clock-outs."""
     await super().on_failure(scheduled_for, error, attempt, giving_up)
     runner = self.runner
-    if runner is None:
-      LOGGER.warning("auto clock-out in %s failed with no runner; no retry scheduled", self.db.name)
-      return
+    assert runner is not None  # only a runner calls this, after registering the job
     # A newer pass already re-planned a superseded entry: its next run is no longer the one that failed.
     if runner.stopping or runner.next_run(self.name) != scheduled_for:
       return
