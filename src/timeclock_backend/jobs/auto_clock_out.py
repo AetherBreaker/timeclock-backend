@@ -1,34 +1,35 @@
-"""The automatic clock-out (R41): runs the rows of `backend.auto_clock_out_runs`, scheduled from that table."""
+"""The automatic clock-out (R41): runs the rows of `backend.auto_clock_out_runs`, scheduled from that table.
+
+`python -m timeclock_backend.jobs.auto_clock_out` runs one pass on the test database, never production (a pass there writes
+punches).
+"""
 
 # Standard library imports
 import asyncio
 import logging
 from collections import defaultdict
-from contextlib import suppress
 from datetime import UTC, datetime, timedelta
-from typing import Final
+from typing import Final, override
 from uuid import uuid4
 
 # Third party imports
 import psycopg
+from aeth_ext import initialize
 from aeth_ext.errors.err_handling import alert
-from apscheduler.jobstores.base import JobLookupError
-from apscheduler.triggers.date import DateTrigger
 from psycopg import sql
 from pydantic import ValidationError
 from timeclock_schema.models import AutoClockOutRun, Punch, PunchCorrection
 from timeclock_schema.shifts import auto_clock_out_due, build_timeline
 from timeclock_schema.wire import NOTIFY_CHANNEL, Notification
 
-# Local folder imports
-from .databases import Database, connect  # APScheduler evaluates the jobs' annotations (inspect.signature) at runtime
-from .scheduler_config import Scheduler  # noqa: TC001  # likewise: sync_auto_clock_out is a job
+# First party imports
+from timeclock_backend.databases import DATABASES, Database, connect
+from timeclock_backend.scheduling import At, Entry, JobBase
 
 LOGGER: Final = logging.getLogger(__name__)
 
 # Open shifts older than this aren't auto-closed (spec §8.4).
 LOOKBACK: Final = timedelta(days=14)
-JOB_ID_PREFIX: Final = "auto_clock_out:"
 _MAX_BACKOFF: Final = 60.0
 # Serializes overlapping runs on one database (across processes, which _PASS_LOCKS doesn't reach); distinct from bootstrap.MIGRATION_LOCK_KEY.
 _RUN_LOCK_KEY: Final = 7_461_726_502
@@ -36,9 +37,7 @@ RETRY_DELAY: Final = timedelta(minutes=10)
 # Bounds every lock wait (projection, run key, row): an owner's open SQL-editor transaction or a second backend instance would
 # otherwise stall the pass silently while it holds _PASS_LOCKS. A timeout becomes the pass's alert and retry.
 _LOCK_TIMEOUT: Final = "1min"
-# A job re-added at or before the scheduler's now is dropped (the firing job still holds its instance slot), skipping the run.
-_MIN_WAIT: Final = timedelta(seconds=1)
-# Serializes one database's passes (the listener's and the job's), so a stale pass can't overwrite a fresher pass's job.
+# Serializes one database's passes (the listener's and the runner's), so a stale pass can't overwrite a fresher pass's entry.
 _PASS_LOCKS: Final[defaultdict[str, asyncio.Lock]] = defaultdict(asyncio.Lock)
 
 
@@ -103,78 +102,80 @@ async def run_auto_clock_out(db: Database, run_id: int) -> int:
   return len(due)
 
 
-async def sync_auto_clock_out(scheduler: Scheduler, db: Database) -> None:
-  """One pass over `db`'s runs (spec §8.4): extend the projection, run due rows oldest first, schedule the next pass.
+class AutoClockOutJob(JobBase):
+  """One database's automatic clock-out; its dynamic entry is rescheduled by each pass."""
 
-  Runs at startup, on each `config.settings` notification and listener reconnect, and as the job at each row's time. Due rows
-  have passed, haven't run, are within `LOOKBACK`, and run only while enabled. The pass stops at its first failed run: a newer
-  run closing a shift first would leave the older run nothing to close. A database error alerts and retries after
-  `RETRY_DELAY`.
-  """
-  job_id = f"{JOB_ID_PREFIX}{db.name}"
-  async with _PASS_LOCKS[db.name]:
-    next_at: datetime | None
-    try:
-      async with await connect(db.name, autocommit=True) as conn:
-        await conn.execute("SELECT set_config('lock_timeout', %s, false)", (_LOCK_TIMEOUT,))
-        # The triggers project only on edits; this extends the projection as the days pass.
-        await conn.execute("SELECT backend.project_auto_clock_out_runs()")
-        # One instant splits due from upcoming: each query's own now() let a row come due between them and fall in neither.
-        [t0_row] = await (await conn.execute("SELECT now() AS t0")).fetchall()
-        t0 = t0_row["t0"]
-        due = await (
-          await conn.execute(
-            "SELECT id FROM backend.auto_clock_out_runs WHERE ran_at IS NULL AND scheduled_for <= %(t0)s "
-            "AND scheduled_for > %(t0)s - %(lookback)s AND EXISTS (SELECT FROM config.settings WHERE auto_clock_out_enabled) "
-            "ORDER BY scheduled_for, id",
-            {"t0": t0, "lookback": LOOKBACK},
-          )
-        ).fetchall()
-      for row in due:
-        await run_auto_clock_out(db, row["id"])
-      async with await connect(db.name, autocommit=True) as conn:
-        # A wait, not Postgres's instant: the backend's clock may differ from the server's. A row that came due during the
-        # runs has a negative wait and gets the floor.
-        upcoming = await (
-          await conn.execute(
-            "SELECT min(scheduled_for) - now() AS wait FROM backend.auto_clock_out_runs WHERE ran_at IS NULL AND scheduled_for > %s",
-            (t0,),
-          )
-        ).fetchone()
-      wait = None if upcoming is None else upcoming["wait"]
-      next_at = None if wait is None else datetime.now(UTC) + max(wait, _MIN_WAIT)
-    except psycopg.Error as e:
-      # wait=False: the default joins the send threads on the loop for up to ~21 s, stalling the relay.
-      alert(f"Auto clock-out failed in {db.name}", str(e), wait=False)
-      next_at = datetime.now(UTC) + RETRY_DELAY
-    if next_at is None:
-      with suppress(JobLookupError):
-        scheduler.remove_job(job_id)
-      LOGGER.info("auto clock-out in %s has no run ahead; job removed", db.name)
-      return
-    # No misfire grace: a late firing still runs, since a dropped one-shot job would never reschedule itself.
-    scheduler.add_job(
-      sync_auto_clock_out,
-      DateTrigger(run_date=next_at),
-      args=(scheduler, db),
-      id=job_id,
-      replace_existing=True,
-      misfire_grace_time=None,  # pyright: ignore[reportArgumentType]  # None (no limit) is documented; the inferred type is int
-    )
-    LOGGER.info("next auto clock-out pass in %s at %s", db.name, next_at)
+  def __init__(self, db: Database) -> None:
+    """The job for `db`."""
+    self.db = db
+
+  @override
+  async def main(self, scheduled_for: datetime) -> None:
+    """One pass over the database's runs (spec §8.4): extend the projection, run due rows oldest first, schedule the next pass.
+
+    Runs at startup, on each `config.settings` notification and listener reconnect, and as the entry's `At` at each row's
+    time; `scheduled_for` is unused, since the rows say what is due. Due rows have passed, haven't run, are within
+    `LOOKBACK`, and run only while enabled. The pass stops at its first failed run: a newer run closing a shift first would
+    leave the older run nothing to close. A database error alerts and retries after `RETRY_DELAY`.
+    """
+    db = self.db
+    async with _PASS_LOCKS[db.name]:
+      next_at: datetime | None
+      try:
+        async with await connect(db.name, autocommit=True) as conn:
+          await conn.execute("SELECT set_config('lock_timeout', %s, false)", (_LOCK_TIMEOUT,))
+          # The triggers project only on edits; this extends the projection as the days pass.
+          await conn.execute("SELECT backend.project_auto_clock_out_runs()")
+          # One instant splits due from upcoming: each query's own now() let a row come due between them and fall in neither.
+          [t0_row] = await (await conn.execute("SELECT now() AS t0")).fetchall()
+          t0 = t0_row["t0"]
+          due = await (
+            await conn.execute(
+              "SELECT id FROM backend.auto_clock_out_runs WHERE ran_at IS NULL AND scheduled_for <= %(t0)s "
+              "AND scheduled_for > %(t0)s - %(lookback)s AND EXISTS (SELECT FROM config.settings WHERE auto_clock_out_enabled) "
+              "ORDER BY scheduled_for, id",
+              {"t0": t0, "lookback": LOOKBACK},
+            )
+          ).fetchall()
+        for row in due:
+          await run_auto_clock_out(db, row["id"])
+        async with await connect(db.name, autocommit=True) as conn:
+          # A wait, not Postgres's instant: the backend's clock may differ from the server's. A row that came due during the
+          # runs has a negative wait; its past `At` runs as soon as this run ends.
+          upcoming = await (
+            await conn.execute(
+              "SELECT min(scheduled_for) - now() AS wait FROM backend.auto_clock_out_runs WHERE ran_at IS NULL AND scheduled_for > %s",
+              (t0,),
+            )
+          ).fetchone()
+        wait = None if upcoming is None else upcoming["wait"]
+        next_at = None if wait is None else datetime.now(UTC) + wait
+      except psycopg.Error as e:
+        # wait=False: the default joins the send threads on the loop for up to ~21 s, stalling the relay.
+        alert(f"Auto clock-out failed in {db.name}", str(e), wait=False)
+        next_at = datetime.now(UTC) + RETRY_DELAY
+      if self.runner is None:  # the __main__ smoke test: nothing to schedule on
+        LOGGER.info("auto clock-out in %s: no runner, so the next pass (%s) isn't scheduled", db.name, next_at)
+      elif next_at is None:
+        self.runner.remove(self.name)
+        LOGGER.info("auto clock-out in %s has no run ahead; entry idle", db.name)
+      else:
+        self.runner.replace(self.name, Entry(self.name, At(next_at), self))
+        LOGGER.info("next auto clock-out pass in %s at %s", db.name, next_at)
 
 
-async def listen_for_settings(scheduler: Scheduler, db: Database) -> None:
+async def listen_for_settings(job: AutoClockOutJob) -> None:
   """Run a pass whenever `config.settings` changes; runs until cancelled.
 
   Every (re)connect runs one too, since notifications sent while disconnected were missed.
   """
+  db = job.db
   backoff = 1.0
   while True:
     try:
       async with await connect(db.name, autocommit=True) as conn:
         await conn.execute(sql.SQL("LISTEN {}").format(sql.Identifier(NOTIFY_CHANNEL)))
-        await sync_auto_clock_out(scheduler, db)
+        await job.main(datetime.now(UTC))
         backoff = 1.0
         async for n in conn.notifies():
           try:
@@ -184,8 +185,13 @@ async def listen_for_settings(scheduler: Scheduler, db: Database) -> None:
             LOGGER.warning("ignored a malformed %s notification in %s: %.200r", NOTIFY_CHANNEL, db.name, n.payload)
             continue
           if table == "config.settings":
-            await sync_auto_clock_out(scheduler, db)
+            await job.main(datetime.now(UTC))
     except psycopg.Error, OSError:
       LOGGER.warning("settings listener for %s lost its connection; retrying in %.0f s", db.name, backoff, exc_info=True)
       await asyncio.sleep(backoff)
       backoff = min(backoff * 2, _MAX_BACKOFF)
+
+
+if __name__ == "__main__":
+  initialize(asyncio=True, logging=True)
+  asyncio.run(AutoClockOutJob(next(db for db in DATABASES if not db.production)).main(datetime.now(UTC)))

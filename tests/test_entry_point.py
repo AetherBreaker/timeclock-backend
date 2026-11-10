@@ -36,7 +36,7 @@ async def test_surface_task_failure_reports_to_the_loop() -> None:
   assert isinstance(errors[0]["exception"], RuntimeError)
 
 
-# Runs the real entry path (SHUTDOWN is one-shot per process): no database, no listeners, a graceful
+# Runs the real entry path (SHUTDOWN is one-shot per process): no database, no dynamic entries or listeners, a graceful
 # shutdown requested once the relay is up. The tail must finish, exit 0 and tear down without errors.
 _SHUTDOWN_DRIVER = """
 import asyncio, os, socket, sys
@@ -63,7 +63,7 @@ async def request_when_relay_up():
   run_shutdown(ShutdownKind.GRACEFUL)
 
 startup.bootstrap = no_bootstrap
-startup.DATABASES = ()
+startup.DYNAMIC = ()
 real_start_relay = startup.start_relay
 
 async def start_relay_then_request(**kwargs):
