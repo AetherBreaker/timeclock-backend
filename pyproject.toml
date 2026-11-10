@@ -15,7 +15,9 @@
     "psycopg-pool>=3.3.3",
     "timeclock-schema>=0.12.2",
     "tzdata>=2026.5",
-  ]
+    "cronsim>=2.8",
+    "xlsxwriter>=3.3.1",
+]
 
   [project.scripts]
     run-app-timeclock-backend = "timeclock_backend.__main__:run_app"
