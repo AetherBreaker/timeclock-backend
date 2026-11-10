@@ -147,6 +147,15 @@ async def test_one_email_with_one_workbook_per_group(migrated: Database, sent: S
   assert [r[0] for r in tabs[f"{warehouse}/Punch Log"][1:]] == ["Bob Lee"]
 
 
+async def test_four_recipients_all_get_the_email(migrated: Database, sent: Sent) -> None:
+  # aeth_ext reads any 4-item sequence of strings as one Address, so a bare 4-tuple of recipients failed every run.
+  recipients = ("a@example.com", "b@example.com", "c@example.com", "d@example.com")
+  await add_employee(migrated, "Ann", "Office")
+  await PayrollReportJob(migrated, recipients).main(SCHEDULED)
+  [(msg, _)] = sent
+  assert [a.addr_spec for a in msg["To"].addresses] == list(recipients)
+
+
 async def test_workbook_tabs_and_headers_match_the_spec(migrated: Database, sent: Sent) -> None:
   ann = await add_employee(migrated, "Ann", "Office")
   await punch(migrated, ann, "clock_in", datetime(2026, 11, 3, 9, tzinfo=NY))

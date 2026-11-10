@@ -10,6 +10,7 @@ recipients.
 # Standard library imports
 import asyncio
 from datetime import datetime, timedelta
+from email.headerregistry import Address
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import override
@@ -81,7 +82,8 @@ class PayrollReportJob(JobBase):
             "subject": f"{', '.join(names)} {stem}",
             "body": f"Timeclock reports for {period.start} to {period.end}, attached: {', '.join(names)}.",
             "from_addr": SETTINGS.alerts_email,
-            "to_addrs": self.recipients,
+            # Address objects: aeth_ext reads a bare 4-item sequence of strings as one Address and raises.
+            "to_addrs": [Address(addr_spec=r) for r in self.recipients],
             "attachments": paths,
           }
         )
