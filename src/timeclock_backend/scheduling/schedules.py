@@ -2,7 +2,7 @@
 
 # Standard library imports
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 # Third party imports
@@ -38,8 +38,9 @@ class Cron:
 
   def latest_before(self, t: datetime) -> datetime:
     """Most recent fire time at or before aware `t`."""
-    # Reverse iteration is strictly before its start; start one minute past `t`'s minute so a fire at `t` is included.
-    start = t.astimezone(self.tz).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    # Reverse iteration is strictly before its start: start a minute past `t`'s minute to include a fire at `t`.
+    # Add in UTC; wall-clock arithmetic on a ZoneInfo datetime resets `fold`.
+    start = (t.astimezone(UTC).replace(second=0, microsecond=0) + timedelta(minutes=1)).astimezone(self.tz)
     return next(CronSim(self.expr, start, reverse=True))
 
   def describe(self) -> str:

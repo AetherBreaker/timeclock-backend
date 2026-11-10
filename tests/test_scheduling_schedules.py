@@ -1,7 +1,7 @@
 """Tests for the cron and one-off schedule types."""
 
 # Standard library imports
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 # Third party imports
@@ -63,3 +63,22 @@ def test_at_always_returns_its_time() -> None:
 def test_at_needs_an_aware_time() -> None:
   with pytest.raises(ValueError, match="aware"):
     At(datetime(2026, 11, 10, 23))  # noqa: DTZ001  # naive on purpose
+
+
+def test_latest_before_in_the_repeated_fall_back_hour() -> None:
+  t = datetime(2026, 11, 1, 1, 30, fold=1, tzinfo=NY)  # 01:30 EST, 06:30 UTC
+  assert Cron("* * * * *", NY).latest_before(t).astimezone(UTC) == datetime(2026, 11, 1, 6, 30, tzinfo=UTC)
+  fired = Cron("30 1 * * *", NY).latest_before(datetime(2026, 11, 1, 1, 45, fold=1, tzinfo=NY))
+  assert fired.astimezone(UTC) in {datetime(2026, 11, 1, 5, 30, tzinfo=UTC), datetime(2026, 11, 1, 6, 30, tzinfo=UTC)}
+  assert fired.date() == date(2026, 11, 1)
+  assert fired.hour == 1
+
+
+def test_next_after_in_the_repeated_fall_back_hour() -> None:
+  t = datetime(2026, 11, 1, 1, 30, fold=1, tzinfo=NY)
+  assert Cron("* * * * *", NY).next_after(t).astimezone(UTC) == datetime(2026, 11, 1, 6, 31, tzinfo=UTC)
+
+
+def test_latest_before_just_after_the_spring_forward_gap() -> None:
+  c = Cron("30 2 * * *", NY)
+  assert c.latest_before(datetime(2027, 3, 14, 3, 10, tzinfo=NY)) == datetime(2027, 3, 14, 3, 0, tzinfo=NY)
