@@ -84,6 +84,8 @@ async def request_when_relay_up():
   run_shutdown(ShutdownKind.GRACEFUL)
 
 startup.bootstrap = no_bootstrap
+# The real STATIC payroll entry would catch up against a database that isn't there, and on Linux log its refused connection.
+startup.STATIC = ()
 startup.DYNAMIC = (Entry("slow", At(datetime.now(UTC)), Slow()),) if SLOW else ()
 real_start_relay = startup.start_relay
 
