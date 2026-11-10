@@ -2,6 +2,7 @@
 
 # Standard library imports
 import asyncio
+import logging
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, date, datetime, time, timedelta
 from itertools import count
@@ -466,10 +467,10 @@ async def run_today_in(db: Database, zone: str, seconds: int) -> None:
 async def test_job_fires_and_rearms_when_the_backend_clock_is_ahead(
   migrated: Database, noon: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """The job really fires, runs its row and leaves its entry scheduled, even with the backend's clock 2 s ahead of Postgres's.
+  """The job fires once its row is due and re-arms for the next row, even with the backend's clock 2 s ahead of Postgres's.
 
-  Scheduling at a raw Postgres instant fired the job 2 s early, before the row was due, and the pass then rescheduled it at a
-  time already past.
+  Scheduled at a raw Postgres instant, every pass would fire 2 s early, find the row not yet due and reschedule the same
+  instant: a hot loop of passes until the row came due.
   """
   skew = timedelta(seconds=2)
 
@@ -492,10 +493,13 @@ async def test_job_fires_and_rearms_when_the_backend_clock_is_ahead(
     await add_punch(migrated, e, "clock_in", datetime.now(UTC) - timedelta(hours=14))  # yesterday in the noon zone
     await run_today_in(migrated, noon, 4)
     await job.main(datetime.now(UTC))
+    row = (await future_runs(migrated))[0]["scheduled_for"]
+    assert job_at(job, row + skew)  # the row's time on the backend's clock
     await wait_until_ran(migrated, 1)
     assert len(await clock_outs(migrated)) == 1
-    await asyncio.sleep(0.2)  # let the firing run's own reschedule land
-    assert job_time(job) is not None
+    following = (await future_runs(migrated))[0]["scheduled_for"]
+    assert following > row
+    await wait_for(lambda: job_at(job, following + skew))  # the firing run's own reschedule
 
 
 async def test_row_coming_due_during_a_pass_runs_at_once(
@@ -605,3 +609,41 @@ async def test_runner_started_pass_failing_unexpectedly_alerts_and_retries(
   retry = job_time(job)
   assert retry is not None
   assert retry <= datetime.now(UTC) + RETRY_DELAY
+
+
+@pytest.mark.parametrize("disturb", ["superseded", "idled", "stopping"])
+async def test_failed_pass_leaves_a_replanned_entry_or_a_stopping_runner_alone(  # noqa: PLR0917  # pytest fixtures
+  migrated: Database,
+  noon: str,
+  job: AutoClockOutJob,
+  alerts: list[tuple[str, str, dict[str, Any]]],
+  monkeypatch: pytest.MonkeyPatch,
+  caplog: pytest.LogCaptureFixture,
+  disturb: str,
+) -> None:
+  """`on_failure` retries only the definition that failed, and not once the runner is stopping; it still alerts."""
+  await add_run(migrated, datetime.now(UTC) - timedelta(days=1), zone=noon)
+  runner = job.runner
+  assert runner is not None
+  later = datetime.now(UTC) + timedelta(hours=1)
+
+  async def broken(_db: Database, _run_id: int) -> NoReturn:
+    if disturb == "superseded":  # a listener's pass re-planned the entry meanwhile
+      runner.replace(job.name, Entry(job.name, At(later), job))
+    elif disturb == "idled":
+      runner.remove(job.name)
+    else:
+      runner.request_stop()
+      await asyncio.sleep(0)  # the stop lands on the loop
+    msg = "bug"
+    raise RuntimeError(msg)
+
+  monkeypatch.setattr(auto_clock_out, "run_auto_clock_out", broken)
+  caplog.set_level(logging.INFO, logger=auto_clock_out.__name__)
+  runner.replace(job.name, Entry(job.name, At(datetime.now(UTC)), job))
+  await wait_for(lambda: bool(alerts))  # on_failure finishes without yielding once its alert is sent
+  [(reason, _, _)] = alerts
+  assert reason == f"Scheduled job {job.name} failed"
+  assert not [r for r in caplog.records if "retrying at" in r.getMessage()]
+  if disturb != "stopping":
+    assert job_time(job) == (later if disturb == "superseded" else None)
