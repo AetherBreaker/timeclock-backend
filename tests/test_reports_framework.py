@@ -144,14 +144,14 @@ async def test_a_day_with_two_shifts_keeps_two_rows(migrated: Database) -> None:
   assert [r[2] for r in rows if r[1] == "2026-10-28"] == ["2026-10-28 06:00:00", "2026-10-28 18:00:00"]
 
 
-async def test_inactive_employee_with_rows_is_kept(migrated: Database) -> None:
+async def test_inactive_employee_with_rows_gets_zero_rows_too(migrated: Database) -> None:
   ann = await add_employee(migrated, "Ann")
   bob = await add_employee(migrated, "Bob")
   await clock_in(migrated, bob, local(date(2026, 10, 29), 9))
   scope = {ann: ScopeEmployee("Ann Lee", active=True), bob: ScopeEmployee("Bob Lee", active=False)}
   async with await connect(migrated.name) as conn:
     rows = await fill_tab(conn, SHIFTS, WEEK, scope)
-  assert len([r for r in rows if r[0] == "Bob Lee"]) == 1
+  assert len([r for r in rows if r[0] == "Bob Lee"]) == len(WEEK.days())  # his one real row, zero rows for the other days
   assert len([r for r in rows if r[0] == "Ann Lee"]) == len(WEEK.days())
 
 
@@ -188,3 +188,18 @@ def test_period_bounds_are_local_midnights() -> None:
   assert end - start == timedelta(days=7, hours=1)  # the fall-back Sunday has 25 hours
   assert start.astimezone(NY).hour == 0
   assert end.astimezone(NY).hour == 0
+
+
+async def test_a_per_employee_query_returning_day_gets_no_spurious_zero_rows(migrated: Database) -> None:
+  ann = await add_employee(migrated, "Ann")
+  await clock_in(migrated, ann, local(date(2026, 10, 27), 9))
+  tab = Tab(
+    name=PER_EMPLOYEE.name,
+    grain=Grain.PER_EMPLOYEE,
+    columns=PER_EMPLOYEE.columns,
+    query=PER_EMPLOYEE.query.replace("'8:00' AS hours", "'8:00' AS hours, current_date AS day"),
+    order_by=PER_EMPLOYEE.order_by,
+  )
+  async with await connect(migrated.name) as conn:
+    rows = await fill_tab(conn, tab, WEEK, {ann: ScopeEmployee("Ann Lee", active=True)})
+  assert rows == [["Employee Name", "Hours", "Breaks"], ["Ann Lee", "8:00", "0:30"]]

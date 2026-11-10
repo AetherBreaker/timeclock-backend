@@ -125,7 +125,7 @@ async def fill_tab(  # noqa: C901
 ) -> list[list[str]]:
   """The tab's header row then its display rows, zero rows included.
 
-  The query gets every scoped id, inactive too, so an inactive employee's real rows come back; only active ones get zero rows.
+  The query gets every scoped id, inactive too; an inactive employee is expected (gets zero rows) only if it returned a row for them.
   """
   start_at, end_at = period.bounds(SETTINGS.tz)
   cursor = await conn.execute(
@@ -142,9 +142,11 @@ async def fill_tab(  # noqa: C901
       days = [None]
     case Grain.PER_EVENT:
       days = []
-  present = {(row["employee_id"], row.get("day")) for row in rows}
+  # Keyed on `day` only for the per-day grain: another grain's query may return a `day` column that isn't part of its key.
+  present = {(row["employee_id"], row["day"] if tab.grain is Grain.PER_EMPLOYEE_DAY else None) for row in rows}
+  has_rows = {row["employee_id"] for row in rows}
   for employee_id, employee in scope.items():
-    if not employee.active:
+    if not employee.active and employee_id not in has_rows:
       continue
     for day in days:
       if (employee_id, day) in present:
