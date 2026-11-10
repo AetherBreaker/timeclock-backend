@@ -8,15 +8,15 @@
     "aeth-ext[async]>=10.0.0",
     "authlib>=1.9.5",
     "bcrypt>=5.0",
+    "cronsim>=2.8",
     "devkit-container>=2.3.1",
     "nicegui>=3.18,<4",
     "psycopg[binary]>=3.2.10",
     "psycopg-pool>=3.3.3",
     "timeclock-schema>=0.13.0",
     "tzdata>=2026.5",
-    "cronsim>=2.8",
     "xlsxwriter>=3.3.1",
-]
+  ]
 
   [project.scripts]
     run-app-timeclock-backend = "timeclock_backend.__main__:run_app"
@@ -29,6 +29,7 @@
     "devkit-claude-hooks>=1.0.1",
     "devkit-poe-complete>=1.1.0",
     "devkit-templates>=1.3.1",
+    "openpyxl>=3.1.5",
     "poethepoet>=0.46.0",
     "pyright>=1.1.411",
     "pytest>=8.0",
