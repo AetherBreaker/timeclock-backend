@@ -127,7 +127,23 @@ def base_json(
   now: datetime,
   day: date | None = None,
 ) -> dict[str, Any]:
-  """The component's `base`: the employee's window of punches and what the editor needs to preview their hours."""
+  """The component's `base`: the employee's window of punches and what the editor needs to preview their hours.
+
+  `timelineDays` is the least a timeline shows, per local day of the week (owner, 2026-11-11): from an hour before
+  opening to the later of closing and the automatic clock-out's stamp. A day with no hours of its own (the weekend)
+  takes the week's earliest opening and latest closing; with no hours at all only the automatic clock-out holds the end.
+  """
+  stamp = [ctx.settings.auto_clock_out_stamp_time] if ctx.settings.auto_clock_out_enabled else []
+  first = week[0].astimezone(ctx.tz).date()
+  days: dict[str, list[int | None]] = {}
+  for d in (first + timedelta(days=n) for n in range((week[1].astimezone(ctx.tz).date() - first).days)):
+    hours = [h for h in ctx.hours if h.weekday == d.isoweekday()] or ctx.hours
+    if ends := [*(h.closes for h in hours), *stamp]:
+      opens = min((h.opens for h in hours), default=None)
+      days[d.isoformat()] = [
+        None if opens is None else ms(datetime.combine(d, opens, tzinfo=ctx.tz) - timedelta(hours=1)),
+        ms(datetime.combine(d, max(ends), tzinfo=ctx.tz)),
+      ]
   return {
     "employee": {"id": person.id, "name": person.name, "first": person.first_name, "username": person.username},
     "own": own,
@@ -139,6 +155,7 @@ def base_json(
     "punches": [punch_json(p) for p in punches],
     "focus": [str(i) for i in focus],
     "day": None if day is None else day.isoformat(),
+    "timelineDays": days,
   }
 
 

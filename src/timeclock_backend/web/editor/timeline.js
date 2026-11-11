@@ -1,6 +1,7 @@
-// The shift editor's timeline (spec 2026-11-05 §8): one entry as a bar zoomed to fit it, with a marker per punch that
-// drags to the minute. A changed punch leaves a hollow marker where it was; a punch the hours ignore is red.
-import { clockTime, localParts } from "shift-editor/rules.js";
+// The shift editor's timeline (spec 2026-11-05 §8): one entry as a bar zoomed to fit it and at least its business day,
+// with a marker per punch that drags to the minute. A changed punch leaves a hollow marker where it was; a punch the
+// hours ignore is red.
+import { clockTime, localDate, localParts } from "shift-editor/rules.js";
 
 const MINUTE = 60000;
 const HOUR = 60 * MINUTE;
@@ -15,6 +16,7 @@ export default {
     red: Array, // ids the hours ignore
     changed: Array, // ids the draft changed or added
     now: Number,
+    days: Object, // base_json's timelineDays: a local day's least [start, end], either null
     tz: String,
     h24: Boolean,
     readOnly: Boolean,
@@ -26,8 +28,10 @@ export default {
       if (this.frozen !== null) return this.frozen; // a drag keeps the zoom it started with
       const times = [...this.punches.map((p) => p.at), ...this.was.map((w) => w.at)];
       if (this.entry.kind === "shift" && this.entry.end === null) times.push(this.now);
-      const lo = Math.min(...times) - PAD;
-      return [lo, Math.max(Math.max(...times) + PAD, lo + 2 * HOUR)];
+      // A day outside the editor's week isn't listed, and its entry zooms to fit alone.
+      const [start, end] = this.days[localDate(this.entry.start, this.tz)] ?? [null, null];
+      const lo = Math.min(Math.min(...times) - PAD, start ?? Infinity);
+      return [lo, Math.max(Math.max(...times) + PAD, lo + 2 * HOUR, end ?? -Infinity)];
     },
     ticks() {
       const [lo, hi] = this.range;

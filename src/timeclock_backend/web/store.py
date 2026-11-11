@@ -1,8 +1,8 @@
 """What the page reads and writes, each call inside one `editor_transaction`, so as the signed-in account's badge.
 
-Badges read punches, corrections, saves, employees (no PIN hashes), fingerprints (no templates), groups, settings and
-the employee change log; they insert punches, corrections and saves, and update the Employees menu's fields
-(timeclock-schema 0015, 0016). The database refuses an account's own punches and locked fields itself.
+Badges read punches, corrections, saves, employees (no PIN hashes), fingerprints (no templates), groups, settings,
+business hours and the employee change log; they insert punches, corrections and saves, and update the Employees menu's
+fields (timeclock-schema 0015, 0016). The database refuses an account's own punches and locked fields itself.
 """
 
 # Standard library imports
@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 # Third party imports
 from psycopg import sql
 from timeclock_schema.enums import EmployeeRole, Finger, PunchKind
-from timeclock_schema.models import Settings
+from timeclock_schema.models import BusinessHours, Settings
 
 # Local folder imports
 from .rules import PAGE_INSTANCE_ID, PagePunch, RecordAction
@@ -75,21 +75,23 @@ class Person:
 
 @dataclass(frozen=True, slots=True)
 class Context:
-  """What every shift page needs besides punches: the hours' zone and settings, the groups and the people."""
+  """What every shift page needs besides punches: the hours' zone and settings, business hours, groups and people."""
 
   tz: ZoneInfo
   settings: Settings
+  hours: tuple[BusinessHours, ...]
   groups: Mapping[int, str]
   people: Mapping[int, Person]
 
 
 async def load_context(conn: AsyncConnection[DictRow], *, default_tz: ZoneInfo) -> Context:
-  """The hours' zone, settings, groups, and every employee with their fingerprint count.
+  """The hours' zone, settings, business hours, groups, and every employee with their fingerprint count.
 
   The zone is the backend's, which it writes to `backend.environment` at every start; `default_tz` before the first.
   """
   row = await (await conn.execute("SELECT tz FROM backend.environment")).fetchone()
   settings = await (await conn.execute("SELECT * FROM config.settings")).fetchone()
+  hours = await (await conn.execute("SELECT * FROM config.business_hours")).fetchall()
   groups = await (await conn.execute("SELECT id, name FROM groups")).fetchall()
   people = await (
     await conn.execute(
@@ -102,6 +104,7 @@ async def load_context(conn: AsyncConnection[DictRow], *, default_tz: ZoneInfo) 
   return Context(
     tz=default_tz if row is None else ZoneInfo(row["tz"]),
     settings=Settings() if settings is None else Settings.model_validate(settings),
+    hours=tuple(BusinessHours.model_validate(h) for h in hours),
     groups={g["id"]: g["name"] for g in groups},
     people={p["id"]: Person(**{**p, "role": EmployeeRole(p["role"])}) for p in people},
   )

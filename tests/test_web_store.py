@@ -49,6 +49,15 @@ async def test_load_context_reads_the_zone_settings_groups_and_people(pages_db: 
   assert set(context.people) == {ann, bob}
   assert (context.people[ann].name, context.people[ann].username, context.people[ann].fingerprints) == ("Ann Lee", "12", 0)
   assert min(context.people.values(), key=lambda p: p.sort_key).id == ann
+  assert context.hours == ()  # bootstrap seeds none
+
+
+async def test_load_context_reads_the_business_hours(pages_db: PagesDb) -> None:
+  with pages_db.admin() as conn:
+    conn.execute("INSERT INTO config.business_hours (weekday, opens, closes) VALUES (1, '06:00', '18:00'), (6, '09:00', '13:00')")
+  async with _as_badge(pages_db) as conn:
+    context = await load_context(conn, default_tz=ZoneInfo("UTC"))
+  assert sorted((h.weekday, h.opens, h.closes) for h in context.hours) == [(1, time(6), time(18)), (6, time(9), time(13))]
 
 
 async def test_load_punches_starts_after_the_last_clock_out_before_the_range(pages_db: PagesDb) -> None:
