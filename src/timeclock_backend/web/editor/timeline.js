@@ -13,6 +13,7 @@ export default {
     entry: Object,
     punches: Array, // the entry's punches and any stray moved into it
     was: Array, // [{id, at}]: where changed punches were
+    breaks: Array, // rules.js totalHours's breaks, for where each one's paid part ends
     red: Array, // ids the hours ignore
     changed: Array, // ids the draft changed or added
     now: Number,
@@ -52,7 +53,15 @@ export default {
       const piece = (cls, a, b) => ({ cls, left: this.pct(a), width: Math.max(this.pct(b) - this.pct(a), 0.4) });
       return [
         piece("sg w", shift.clockIn.at, shift.clockOut === null ? this.now : shift.clockOut.at),
-        ...shift.breaks.map((b) => piece("sg b", b.start, b.end === null ? this.now : b.end)),
+        // A break's unpaid part is striped ("u"); a split break squares the corners where its two parts meet.
+        ...shift.breaks.flatMap((b) => {
+          const end = b.end === null ? this.now : b.end;
+          const counted = this.breaks.find((x) => x.start === b.start);
+          const cut = counted === undefined ? end : b.start + counted.paid;
+          if (cut >= end) return [piece("sg b", b.start, end)];
+          if (cut <= b.start) return [piece("sg b u", b.start, end)];
+          return [piece("sg b head", b.start, cut), piece("sg b u tail", cut, end)];
+        }),
         ...shift.lunches.map((l) => piece("sg l", l.start, l.end === null ? this.now : l.end)),
       ];
     },
@@ -131,7 +140,7 @@ export default {
         ><i v-if="m.label" :class="m.side">{{ m.label }}</i></div>
       </div>
       <div class="legend">
-        <span class="k k-work">Working</span><span class="k k-break">Break</span><span class="k k-lunch">Lunch</span>
+        <span class="k k-work">Working</span><span class="k k-break">Break</span><span class="k k-unpaid">Unpaid break</span><span class="k k-lunch">Lunch</span>
         <span class="k k-red">Needs fixing</span>
         <span v-if="!readOnly">Drag a marker to change its time, or type it below.</span>
       </div>

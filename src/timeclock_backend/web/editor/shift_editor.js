@@ -223,8 +223,8 @@ export default {
     },
     week() {
       const opts = { ...this.hoursOpts, week: this.draft.base.week };
-      const before = weekHours(this.draft.base.punches, opts).worked;
-      return { before, after: this.overlapNote ? before : weekHours(this.current, opts).worked }; // an overlap merges into the other shift
+      const before = weekHours(this.draft.base.punches, opts);
+      return { before, after: this.overlapNote ? before : weekHours(this.current, opts) }; // an overlap merges into the other shift
     },
     changed() {
       return [...this.draft.edits].filter(([, e]) => !e.removed).map(([id]) => id);
@@ -349,6 +349,17 @@ export default {
       if (pair.start.punches.length !== 1 || pair.end.punches.length !== 1) return "";
       return hm(pair.end.punches[0].at - pair.start.punches[0].at);
     },
+    // A break's paid and unpaid parts as the hours count them, for its row: [] when it lacks a single start and end or
+    // the hours don't count it, else one {paid, unpaid, why}, each part as h:mm or null under a minute.
+    breakSplit(v, pair) {
+      if (v.hours === null || !this.duration(pair)) return [];
+      const found = v.hours.breaks.find((b) => b.start === pair.start.punches[0].at);
+      if (found === undefined) return [];
+      const { paidBreakMinutes: allowance, breakLimitMinutes: limit } = this.draft.base;
+      const why =
+        found.cause === "limit" ? `over the ${limit}-minute limit` : allowance === 0 ? "breaks aren't paid" : `the day's ${allowance} paid minutes were used up`;
+      return [{ paid: found.paid < MINUTE ? null : hm(found.paid), unpaid: found.unpaid < MINUTE ? null : hm(found.unpaid), why }];
+    },
     moveIn(stray, shift) {
       this.apply((d) => D.moveIn(d, stray.key, shift.key));
     },
@@ -381,7 +392,7 @@ export default {
       for (const e of this.shownAll) {
         if (e.kind !== "shift") continue;
         const h = entryHours(e, this.current, opts);
-        preview.entries[e.key] = [h.worked, h.paidBreak, h.unpaid];
+        preview.entries[e.key] = [h.worked, h.paidBreak, h.unpaidBreak + h.lunch]; // the schema's three totals
       }
       this.saving = true;
       this.message = null;
@@ -491,6 +502,7 @@ export default {
                 :entry="v.entry"
                 :punches="v.punches"
                 :was="was(v)"
+                :breaks="v.hours === null ? [] : v.hours.breaks"
                 :red="[...v.red]"
                 :changed="options.add ? [] : changed"
                 :now="now"
@@ -533,7 +545,16 @@ export default {
                   <span class="to">to</span>
                   <editor-slot label="End" :kind="what + '_end'" :place="pair.end" :entry="v.entry" :base="baseById" :edits="draft.edits"
                     :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" @apply="apply" />
-                  <span class="dur">{{ duration(pair) }}</span>
+                  <span class="dur">
+                    {{ duration(pair) }}
+                    <!-- A one-item v-for binds the split once. -->
+                    <div v-for="s in what === 'break' ? breakSplit(v, pair) : []" :key="0" class="split">
+                      <template v-if="s.unpaid === null">paid</template>
+                      <span v-else-if="s.paid === null" class="unpaid">unpaid</span>
+                      <template v-else>{{ s.paid }} paid · <span class="unpaid">{{ s.unpaid }} unpaid</span></template>
+                      <div v-if="s.unpaid !== null" class="why">{{ s.why }}</div>
+                    </div>
+                  </span>
                   <q-btn v-if="!readOnly" flat round dense size="sm" class="del" aria-label="Remove" @click="removePair(pair)">
                     <span class="page-icon icon-delete"></span>
                   </q-btn>
@@ -581,7 +602,11 @@ export default {
             <table>
               <template v-for="v in shiftViews" :key="v.key">
                 <tr v-if="shiftViews.length > 1"><td colspan="2" class="sub">{{ span(v.entry) }}</td></tr>
-                <tr v-for="[label, field] in [['Worked', 'worked'], ['Paid breaks', 'paidBreak'], ['Lunch and unpaid breaks', 'unpaid']]" :key="field">
+                <tr
+                  v-for="[label, field] in [['Worked', 'worked'], ['Paid breaks', 'paidBreak'], ['Paid hours', 'paid'], ['Unpaid breaks', 'unpaidBreak'], ['Lunch', 'lunch']]"
+                  :key="field"
+                  :class="{ total: field === 'paid' }"
+                >
                   <td>{{ label }}</td>
                   <td class="v">
                     <span v-if="v.before && v.before[field] !== v.hours[field]" class="old">{{ hm(v.before[field]) }}</span>
@@ -592,8 +617,14 @@ export default {
               <tr class="wk2">
                 <td>{{ first }}'s week</td>
                 <td class="v">
-                  <span v-if="week.before !== week.after" class="old">{{ hm(week.before) }}</span>
-                  <span :class="{ new: week.before !== week.after }">{{ hm(week.after) }}</span>
+                  <span v-if="week.before.paid !== week.after.paid" class="old">{{ hm(week.before.paid) }}</span>
+                  <span :class="{ new: week.before.paid !== week.after.paid }">{{ hm(week.after.paid) }}</span> paid
+                </td>
+              </tr>
+              <tr class="wk3">
+                <td></td>
+                <td class="v">
+                  <span v-if="week.before.worked !== week.after.worked" class="old">{{ hm(week.before.worked) }}</span>{{ hm(week.after.worked) }} worked
                 </td>
               </tr>
             </table>
