@@ -94,6 +94,7 @@ def _case(
   touched: list[str] = (),  # pyright: ignore[reportArgumentType]
   span: tuple[datetime, datetime] | None = None,
   paid_break_minutes: int = 30,
+  break_limit_minutes: int = 15,
   walls: list[tuple[str, str]] = (),  # pyright: ignore[reportArgumentType]
 ) -> dict[str, Any]:
   zone = ZoneInfo(tz)
@@ -102,6 +103,7 @@ def _case(
   return {
     "tz": tz,
     "paidBreakMinutes": paid_break_minutes,
+    "breakLimitMinutes": break_limit_minutes,
     "asOf": _ms(as_of),
     "week": [_ms(week[0]), _ms(week[1])],
     "punches": punches,
@@ -190,6 +192,7 @@ def _random_case(rng: random.Random) -> dict[str, Any]:  # noqa: C901 - one gene
     touched=touched,
     span=(span_start, span_start + timedelta(hours=rng.randint(1, 10))),
     paid_break_minutes=rng.choice((0, 15, 30)),
+    break_limit_minutes=rng.choice((0, 10, 15)),
     walls=[
       ((day + timedelta(days=rng.randint(0, 2))).isoformat(), f"{rng.randint(0, 23):02d}:{rng.randint(0, 59):02d}") for _ in range(6)
     ],
@@ -289,7 +292,7 @@ def _entry_json(e: rules.Entry) -> dict[str, Any]:
 def _answer(case: dict[str, Any]) -> dict[str, Any]:
   """Python's answers, in the shape `drift_driver.mjs` prints."""
   tz, as_of = ZoneInfo(case["tz"]), _dt(case["asOf"])
-  settings = Settings(paid_break_minutes=case["paidBreakMinutes"])
+  settings = Settings(paid_break_minutes=case["paidBreakMinutes"], break_limit_minutes=case["breakLimitMinutes"])
   punches = [_page_punch(p) for p in case["punches"]]
   base = {p.id: p for p in punches}
   draft = [_draft_punch(d) for d in case["draft"]]

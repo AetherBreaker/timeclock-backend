@@ -16,7 +16,7 @@ const entryJson = (e) => ({
 });
 
 const answers = cases.map((c) => {
-  const opts = { paidBreakMinutes: c.paidBreakMinutes, tz: c.tz, now: c.asOf };
+  const opts = { paidBreakMinutes: c.paidBreakMinutes, breakLimitMinutes: c.breakLimitMinutes, tz: c.tz, now: c.asOf };
   const found = rules.entries(c.punches, c.asOf);
   const base = Object.fromEntries(c.punches.map((p) => [p.id, p]));
   const clean = c.draft.filter((d) => !rules.conflicts(base, [d]).length);
