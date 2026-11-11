@@ -480,19 +480,30 @@ export function banner(entry, { tz, h24 }) {
   return `The hours ignore ${ignored.length} punch${ignored.length === 1 ? "" : "es"} in this shift: ${which}.`;
 }
 
-// A typed time of day: "5:05 PM", "5:05pm", "17:05", "1705", "505p", "5p", "12 am"; null when it isn't one.
-export function parseTime(text) {
-  const typed = text.toLowerCase().replace(/[\s.]/g, "");
-  const match = /^(\d{1,2})(?::?(\d{2}))?(a|p|am|pm)?$/.exec(typed);
-  if (match === null) return null;
-  let h = Number(match[1]);
-  const m = match[2] === undefined ? 0 : Number(match[2]);
-  const half = match[3]?.[0];
-  if (m > 59) return null;
-  if (half === undefined) return h > 23 ? null : { h, m };
-  if (h < 1 || h > 12) return null;
-  h = (h % 12) + (half === "p" ? 12 : 0);
-  return { h, m };
+// A time field's digits as a time of day: three or four end in the minutes ("239" is 2:39), one or two are the hour.
+// `half` ("AM", "PM" or null) places an hour from 1 to 12; 0 and 13 to 23 are 24-hour already. Null when it isn't one.
+export function readTime(digits, half = null) {
+  if (!/^\d{1,4}$/.test(digits)) return null;
+  const h = Number(digits.length > 2 ? digits.slice(0, -2) : digits);
+  const m = digits.length > 2 ? Number(digits.slice(-2)) : 0;
+  if (h > 23 || m > 59) return null;
+  return { h: half === null || h === 0 || h > 12 ? h : (h % 12) + (half === "PM" ? 12 : 0), m };
+}
+
+// The half a 12-hour time typed into an empty field most likely means, from the entry's first punch (a shift's
+// clock-in): another clock-in the nearest such time, a stray's clock-in or start the last before it, anything else the
+// first after it (placeTime's rule). With no punch yet, 6 to 11 is the morning and 12 to 5 the afternoon.
+export function guessHalf(entry, slotKind, { h, m }, tz) {
+  const start = entry.kind === "shift" ? entry.shift.clockIn.at : entry.start;
+  if (start === null) return h >= 6 && h < 12 ? "AM" : "PM";
+  const p = localParts(start, tz);
+  const gap = (half) => {
+    const after = ((h % 12) + (half === "PM" ? 12 : 0) - p.hour) * 60 + m - p.minute;
+    if (slotKind === "clock_in" && entry.kind === "shift") return Math.min(Math.abs(after), 1440 - Math.abs(after));
+    const before = slotKind === "clock_in" || slotKind.endsWith("_start");
+    return (((before && entry.kind !== "shift" ? -after : after) % 1440) + 1440) % 1440;
+  };
+  return gap("AM") <= gap("PM") ? "AM" : "PM";
 }
 
 // The instant a typed time names for a slot (spec §8): a clock-in on the entry's day; anything else on the clock-in's

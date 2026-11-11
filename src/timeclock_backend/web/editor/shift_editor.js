@@ -4,6 +4,7 @@
 import { markRaw } from "vue";
 import * as D from "shift-editor/draft.js";
 import { clockTime, entries, entryHours, flags, hm, localDate, order, weekHours } from "shift-editor/rules.js";
+import TimeField from "shift-editor/time_field.js";
 import Timeline from "shift-editor/timeline.js";
 
 const KINDS = [
@@ -52,7 +53,7 @@ const PunchMenu = {
 
 // One slot (spec §6.5): a punch's time field, a missing punch to type in, or a choice between several.
 const SlotField = {
-  components: { "punch-menu": PunchMenu },
+  components: { "punch-menu": PunchMenu, "time-field": TimeField },
   props: {
     place: Object,
     kind: String,
@@ -70,7 +71,6 @@ const SlotField = {
     technical: Boolean,
   },
   emits: ["apply"],
-  data: () => ({ bad: false }),
   computed: {
     D: () => D,
     word() {
@@ -84,28 +84,6 @@ const SlotField = {
   methods: {
     time(ms) {
       return clockTime(ms, this.tz, this.h24);
-    },
-    placed(event) {
-      const typed = D.parseTime(event.target.value);
-      this.bad = typed === null;
-      return typed === null ? null : D.placeTime(this.entry, this.kind, typed, this.tz);
-    },
-    typed(punch, event) {
-      const at = this.placed(event);
-      if (at === null) return;
-      this.$emit("apply", (d) => D.setTime(d, punch.id, at));
-      event.target.value = this.time(at);
-    },
-    added(event) {
-      const at = this.placed(event);
-      if (at === null) return;
-      event.target.value = "";
-      this.$emit("apply", (d) => D.add(d, this.kind, at));
-    },
-    keptAt(event) {
-      const at = this.placed(event);
-      if (at === null) return;
-      this.$emit("apply", (d) => D.keep(d, this.place, { at }));
     },
     was(punch) {
       const before = this.base.get(punch.id);
@@ -132,17 +110,17 @@ const SlotField = {
             <punch-menu v-if="!readOnly" :punch="p" :tz="tz" :h24="h24" @apply="(f) => $emit('apply', f)" />
           </template>
           <span class="radio-other">Another time</span>
-          <div :class="['field', 'field-small', { bad }]"><input :disabled="readOnly" placeholder="--:--" @change="keptAt" /></div>
+          <time-field class="field-small" :entry="entry" :kind="kind" :tz="tz" :h24="h24" :read-only="readOnly" label="Another time" placeholder="--:--"
+            @set="(at) => $emit('apply', (d) => D.keep(d, place, { at }))" />
         </div>
         <div class="small muted">The ones you don't keep are removed. Another time keeps a single {{ word }} at the time you type.</div>
         <template v-if="technical"><div v-for="p in place.punches" :key="p.id" class="det">{{ D.punchDetail(p, { tz, h24 }) }}</div></template>
       </div>
       <div v-else-if="place.punches.length === 1" class="slot-one">
         <div class="row-tight">
-          <div :class="['field', { changed: was(place.punches[0]) || (!adding && edits.get(place.punches[0].id)?.new), bad: bad || red.has(place.punches[0].id) }]">
-            <span class="page-icon icon-schedule"></span>
-            <input :value="time(place.punches[0].at)" :disabled="readOnly" :aria-label="label" @change="typed(place.punches[0], $event)" />
-          </div>
+          <time-field :class="{ changed: was(place.punches[0]) || (!adding && edits.get(place.punches[0].id)?.new), bad: red.has(place.punches[0].id) }"
+            :at="place.punches[0].at" :entry="entry" :kind="kind" :tz="tz" :h24="h24" :read-only="readOnly" :label="label"
+            @set="(at) => $emit('apply', (d) => D.setTime(d, place.punches[0].id, at))" />
           <span v-if="tag(place.punches[0])" class="tagx">{{ tag(place.punches[0]) }}</span>
           <punch-menu v-if="!readOnly" :punch="place.punches[0]" :tz="tz" :h24="h24" @apply="(f) => $emit('apply', f)" />
         </div>
@@ -156,9 +134,8 @@ const SlotField = {
         </div>
         <div v-if="technical" class="det">{{ D.punchDetail(place.punches[0], { tz, h24 }) }}</div>
       </div>
-      <div v-else :class="['field', 'missing', { bad }]">
-        <input :disabled="readOnly" :placeholder="working ? 'Working' : 'Missing'" :aria-label="label" @change="added" />
-      </div>
+      <time-field v-else class="missing" :entry="entry" :kind="kind" :tz="tz" :h24="h24" :read-only="readOnly" :label="label"
+        :placeholder="working ? 'Working' : 'Missing'" @set="(at) => $emit('apply', (d) => D.add(d, kind, at))" />
     </div>
   `,
 };

@@ -999,6 +999,49 @@ ul.plain {
   color: var(--muted);
 }
 
+/* A time field (editor/time_field.js): the clock opens the picker, AM or PM switches on a click. */
+.time-field input {
+  width: 64px;
+}
+
+.tf-pick,
+.tf-half {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.tf-pick:hover .page-icon {
+  color: var(--text);
+}
+
+.tf-half {
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: var(--surface2);
+  color: var(--text);
+  font: 500 13px Roboto, Arial, sans-serif;
+}
+
+button.tf-half:hover {
+  background: var(--hover);
+}
+
+span.tf-half {
+  cursor: default;
+  color: var(--muted);
+}
+
+.tf-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
 .was {
   display: flex;
   align-items: center;
