@@ -183,10 +183,12 @@ export function zonedTime(day, time, tz) {
   return second + offsetAt(second, tz) === wall ? second : first;
 }
 
-// The schema's total_hours: worked (less every break and lunch), paid break (the local day's allowance, earliest
-// first) and unpaid, inside [start, end); an open shift, break or lunch runs to `now`.
-export function totalHours(punches, { paidBreakMinutes, tz, start, end, now }) {
+// The schema's total_hours: worked (less every break and lunch), paid break (each break up to the per-break limit, and
+// those paid parts up to the local day's allowance, earliest first) and unpaid, inside [start, end); an open shift,
+// break or lunch runs to `now`. A limit of 0 or none is off.
+export function totalHours(punches, { paidBreakMinutes, breakLimitMinutes, tz, start, end, now }) {
   const allowance = paidBreakMinutes * 60000;
+  const limit = breakLimitMinutes ? breakLimitMinutes * 60000 : Infinity;
   const left = new Map();
   let worked = 0;
   let paidBreak = 0;
@@ -206,7 +208,7 @@ export function totalHours(punches, { paidBreakMinutes, tz, start, end, now }) {
       const brkEnd = brk.end === null ? now : brk.end;
       const day = localDate(brk.start, tz);
       const have = left.has(day) ? left.get(day) : allowance;
-      const paidLength = Math.min(have, brkEnd - brk.start);
+      const paidLength = Math.min(have, brkEnd - brk.start, limit);
       left.set(day, have - paidLength);
       const paidPart = counted(brk.start, brk.start + paidLength);
       const unpaidPart = counted(brk.start + paidLength, brkEnd);

@@ -34,7 +34,7 @@ from timeclock_backend.web.rules import (
 
 TZ = ZoneInfo("America/New_York")
 LATER = datetime(2026, 11, 20, tzinfo=UTC)  # after every punch below
-SETTINGS = Settings(paid_break_minutes=30)
+SETTINGS = Settings(paid_break_minutes=30, break_limit_minutes=0)  # the daily allowance alone
 IN, OUT = PunchKind.CLOCK_IN, PunchKind.CLOCK_OUT
 BREAK_START, BREAK_END = PunchKind.BREAK_START, PunchKind.BREAK_END
 

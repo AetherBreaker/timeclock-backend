@@ -149,6 +149,7 @@ def base_json(
     "own": own,
     "tz": ctx.tz.key,
     "paidBreakMinutes": ctx.settings.paid_break_minutes,
+    "breakLimitMinutes": ctx.settings.break_limit_minutes,
     "now": ms(now),
     "week": [ms(week[0]), ms(week[1])],
     "token": window_token(punches),

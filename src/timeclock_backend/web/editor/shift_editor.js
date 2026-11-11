@@ -181,7 +181,8 @@ export default {
       return new Map(this.draft.base.punches.map((p) => [p.id, p]));
     },
     hoursOpts() {
-      return { paidBreakMinutes: this.draft.base.paidBreakMinutes, tz: this.tz, now: this.now };
+      const { paidBreakMinutes, breakLimitMinutes } = this.draft.base;
+      return { paidBreakMinutes, breakLimitMinutes, tz: this.tz, now: this.now };
     },
     refusedIds() {
       const found = D.refused(this.draft);
