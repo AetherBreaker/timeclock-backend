@@ -184,24 +184,29 @@ export function zonedTime(day, time, tz) {
 }
 
 // The schema's total_hours: worked (less every break and lunch), paid break (each break up to the per-break limit, and
-// those paid parts up to the local day's allowance, earliest first) and unpaid, inside [start, end); an open shift,
-// break or lunch runs to `now`. A limit of 0 or none is off.
+// those paid parts up to the local day's allowance, earliest first), unpaid break and lunch, inside [start, end), and paid
+// (worked + paid break); an open shift, break or lunch runs to `now`. A limit of 0 or none is off. The schema's `unpaid`
+// is unpaidBreak + lunch.
+// `breaks` is every break whole, range or not: {start, end, paid, unpaid, cause}, cause saying what left part of it
+// unpaid ("limit" when the limit cut it no later than the allowance did, else "allowance"; null when all of it is paid).
 export function totalHours(punches, { paidBreakMinutes, breakLimitMinutes, tz, start, end, now }) {
   const allowance = paidBreakMinutes * 60000;
   const limit = breakLimitMinutes ? breakLimitMinutes * 60000 : Infinity;
   const left = new Map();
   let worked = 0;
   let paidBreak = 0;
-  let unpaid = 0;
+  let unpaidBreak = 0;
+  let lunch = 0;
+  const breaks = [];
   for (const shift of buildTimeline(punches, now).shifts) {
     const lo = Math.max(shift.clockIn.at, start);
     const hi = Math.min(shift.clockOut === null ? now : shift.clockOut.at, end);
     const counted = (a, b) => Math.max(Math.min(b, hi) - Math.max(a, lo), 0);
     worked += counted(lo, hi);
-    for (const lunch of shift.lunches) {
-      const time = counted(lunch.start, lunch.end === null ? now : lunch.end);
+    for (const l of shift.lunches) {
+      const time = counted(l.start, l.end === null ? now : l.end);
       worked -= time;
-      unpaid += time;
+      lunch += time;
     }
     // Charged even when the shift lies outside the range, so a later break that day sees the allowance already used.
     for (const brk of shift.breaks) {
@@ -214,10 +219,12 @@ export function totalHours(punches, { paidBreakMinutes, breakLimitMinutes, tz, s
       const unpaidPart = counted(brk.start + paidLength, brkEnd);
       worked -= paidPart + unpaidPart;
       paidBreak += paidPart;
-      unpaid += unpaidPart;
+      unpaidBreak += unpaidPart;
+      const rest = brkEnd - brk.start - paidLength;
+      breaks.push({ start: brk.start, end: brk.end, paid: paidLength, unpaid: rest, cause: rest === 0 ? null : limit <= have ? "limit" : "allowance" });
     }
   }
-  return { worked, paidBreak, unpaid };
+  return { worked, paidBreak, paid: worked + paidBreak, unpaidBreak, lunch, breaks }; // paid: what the weekly alert counts
 }
 
 export function entryHours(entry, punches, opts) {

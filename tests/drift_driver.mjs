@@ -26,7 +26,7 @@ const answers = cases.map((c) => {
   const overlap = rules.overlapping(c.punches, c.span[0], c.span[1], c.asOf);
   const hours = found.map((e) => {
     const h = rules.entryHours(e, c.punches, opts);
-    return h === null ? null : [h.worked, h.paidBreak, h.unpaid];
+    return h === null ? null : [h.worked, h.paidBreak, h.unpaidBreak + h.lunch];
   });
   const week = rules.weekHours(c.punches, { ...opts, week: c.week });
   return {
@@ -34,7 +34,7 @@ const answers = cases.map((c) => {
     flags: found.map((e) => rules.flags(e)),
     problems: found.map((e) => rules.problem(e)),
     hours,
-    week: [week.worked, week.paidBreak, week.unpaid],
+    week: [week.worked, week.paidBreak, week.unpaidBreak + week.lunch],
     conflicts: rules.conflicts(base, c.draft),
     records,
     after: rules.entries(after, c.asOf).map(entryJson),

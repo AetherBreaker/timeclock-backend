@@ -60,10 +60,27 @@ async def test_the_list_opens_on_this_week_sorted_by_last_name_with_week_totals(
   assert _cards(db_page) == [f"employee-{cy}", f"employee-{bob}"]
   await db_page.user.should_see("Cy Adams")
   await db_page.user.should_see("ID 56")
-  await db_page.user.should_see(marker=f"week-total-{cy}", content="8:15")
-  await db_page.user.should_see(marker=f"week-total-{bob}", content="8:00")
+  await db_page.user.should_see(marker=f"week-paid-{cy}", content="8:30")
+  await db_page.user.should_see(marker=f"week-worked-{cy}", content="8:15")
+  await db_page.user.should_see(marker=f"week-paid-{bob}", content="8:00")
+  await db_page.user.should_see(marker=f"week-worked-{bob}", content="8:00")
   await db_page.user.should_see("Mon, Nov 2")
   await db_page.user.should_see("1 · 0:15")
+  await db_page.user.should_not_see("unpaid")  # Cy's break is all paid
+
+
+async def test_a_break_past_the_limit_shows_its_unpaid_part_and_the_paid_hours(db_page: DbPage) -> None:
+  # The default 15-minute limit leaves 5 of the break's 20 minutes unpaid; paid hours are worked plus paid breaks.
+  bob = db_page.db.employees[1]
+  first = _shift(db_page, bob, 3, "08:00", "16:00")
+  for kind, clock in (("break_start", "10:00"), ("break_end", "10:20"), ("lunch_start", "12:00"), ("lunch_end", "12:30")):
+    db_page.db.punch(bob, kind, _ny(3, clock))
+  await db_page.user.open("/")
+  await db_page.user.should_see("1 · 0:20")
+  await db_page.user.should_see(marker=f"unpaid-{first}", content="(0:05 unpaid)")
+  await db_page.user.should_see(marker=f"paid-{first}", content="7:25")
+  await db_page.user.should_see(marker=f"week-paid-{bob}", content="7:25")
+  await db_page.user.should_see(marker=f"week-worked-{bob}", content="7:10")
 
 
 async def test_employees_with_no_shift_that_week_are_left_out(db_page: DbPage) -> None:
@@ -166,11 +183,11 @@ async def test_an_overnight_shift_shows_in_both_weeks(db_page: DbPage) -> None:
   await sign_in(db_page, db_page.db.email)  # a week on, the fixture's sign-in has expired
   await db_page.user.open("/?week=2026-11-04")
   await db_page.user.should_see(marker=f"row-{start}")
-  await db_page.user.should_see(marker=f"week-total-{bob}", content="2:00")
+  await db_page.user.should_see(marker=f"week-worked-{bob}", content="2:00")
   db_page.user.find(marker="week-next").click()
   await db_page.user.should_see("Nov 9 to 15, 2026")
   await db_page.user.should_see(marker=f"row-{start}")
-  await db_page.user.should_see(marker=f"week-total-{bob}", content="6:00")
+  await db_page.user.should_see(marker=f"week-worked-{bob}", content="6:00")
 
 
 async def test_technical_details_add_the_clock_and_punch_columns(db_page: DbPage) -> None:
