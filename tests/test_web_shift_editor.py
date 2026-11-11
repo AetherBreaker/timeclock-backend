@@ -3,7 +3,7 @@
 # Standard library imports
 import asyncio
 from datetime import UTC, date, datetime, time, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, LiteralString
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -132,6 +132,45 @@ async def test_a_row_opens_its_shift_in_the_editor(db_page: DbPage) -> None:
   assert base["focus"] == [str(start), str(end)]
   assert (base["employee"]["id"], base["employee"]["first"], base["tz"], base["own"]) == (bob, "Bob", "America/New_York", False)
   assert base["week"] == [ms(WEEK[0]), ms(WEEK[1])]
+
+
+async def _timeline_days(db_page: DbPage, *setup: LiteralString) -> dict[str, list[int | None]]:
+  """The opened editor's `timelineDays` for Bob's shift on Tue Nov 3, after `setup` runs on the production database."""
+  with db_page.db.admin() as conn:
+    for statement in setup:
+      conn.execute(statement)
+  bob = db_page.db.employees[1]
+  start = db_page.db.punch(bob, "clock_in", _ny(3, "08:00"))
+  db_page.db.punch(bob, "clock_out", _ny(3, "16:00"))
+  await db_page.user.open(f"/shift?employee={bob}&punch={start}")
+  await db_page.user.should_see(kind=ShiftEditor)
+  return _editor(db_page).props["base"]["timelineDays"]
+
+
+async def test_the_timeline_runs_from_an_hour_before_opening_to_the_automatic_clock_out(db_page: DbPage) -> None:
+  days = await _timeline_days(
+    db_page, "INSERT INTO config.business_hours (weekday, opens, closes) SELECT d, '06:00', '18:00' FROM generate_series(1, 5) d"
+  )
+  assert sorted(days) == [f"2026-11-{d:02}" for d in range(2, 9)]  # the week's days
+  assert days["2026-11-03"] == [ms(_ny(3, "05:00")), ms(_ny(3, "23:00"))]
+  assert days["2026-11-07"] == [ms(_ny(7, "05:00")), ms(_ny(7, "23:00"))]  # Saturday, closed, takes the week's hours
+
+
+async def test_the_timeline_ends_at_closing_when_that_is_later(db_page: DbPage) -> None:
+  days = await _timeline_days(
+    db_page,
+    "INSERT INTO config.business_hours (weekday, opens, closes) VALUES (2, '07:30', '12:00'), (2, '13:00', '19:00')",
+    "UPDATE config.settings SET auto_clock_out_stamp_time = '18:30'",
+  )
+  assert days["2026-11-03"] == [ms(_ny(3, "06:30")), ms(_ny(3, "19:00"))]
+
+
+async def test_without_business_hours_only_the_automatic_clock_out_holds_the_timeline(db_page: DbPage) -> None:
+  assert (await _timeline_days(db_page))["2026-11-03"] == [None, ms(_ny(3, "23:00"))]
+
+
+async def test_without_hours_or_an_automatic_clock_out_the_timeline_fits_the_shift(db_page: DbPage) -> None:
+  assert await _timeline_days(db_page, "UPDATE config.settings SET auto_clock_out_enabled = false") == {}
 
 
 async def test_your_own_shift_opens_read_only(db_page: DbPage) -> None:

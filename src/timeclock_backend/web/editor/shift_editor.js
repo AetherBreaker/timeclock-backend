@@ -516,6 +516,7 @@ export default {
                 :red="[...v.red]"
                 :changed="options.add ? [] : changed"
                 :now="now"
+                :days="base.timelineDays"
                 :tz="tz"
                 :h24="h24"
                 :read-only="readOnly"
