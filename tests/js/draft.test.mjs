@@ -402,21 +402,43 @@ test("an added shift that overlaps one the employee has says which", () => {
   assert.equal(d.changes(d.add(adding(), "clock_in", at(4, "13:00"), id(3)), { tz: TZ, h24: false })[0], "New shift: 1:00 PM, no clock-out");
 });
 
-test("typed times", () => {
-  const accepted = [
-    ["5:05 PM", 17, 5],
-    ["5:05pm", 17, 5],
-    ["17:05", 17, 5],
-    ["1705", 17, 5],
-    ["505p", 17, 5],
-    ["5p", 17, 0],
-    ["12 am", 0, 0],
-    ["12pm", 12, 0],
-    ["0:30", 0, 30],
-    [" 7:01 a.m. ", 7, 1],
+test("typed digits: the last two are the minutes once there are three", () => {
+  const read = [
+    ["5", null, 5, 0],
+    ["12", null, 12, 0],
+    ["239", null, 2, 39],
+    ["1705", null, 17, 5],
+    ["0030", null, 0, 30],
+    ["505", "PM", 17, 5],
+    ["5", "PM", 17, 0],
+    ["239", "AM", 2, 39],
+    ["12", "AM", 0, 0],
+    ["12", "PM", 12, 0],
+    ["1230", "AM", 0, 30],
+    ["1705", "AM", 17, 5], // already 24-hour, so AM or PM can't move it
+    ["030", "PM", 0, 30],
   ];
-  for (const [typed, h, m] of accepted) assert.deepEqual(d.parseTime(typed), { h, m }, typed);
-  for (const typed of ["", "25:00", "5:60", "13pm", "0am", "abc", "5:5", "12345", "5:05 xm"]) assert.equal(d.parseTime(typed), null, typed);
+  for (const [digits, half, h, m] of read) assert.deepEqual(d.readTime(digits, half), { h, m }, `${digits} ${half}`);
+  for (const digits of ["", "24", "560", "2400", "12345", "5a", "5:05"]) assert.equal(d.readTime(digits, "PM"), null, digits);
+});
+
+test("a time typed without AM or PM takes the likelier one", () => {
+  const [day] = d.shown(d.newDraft(base(plain))); // 7:00 AM to 3:30 PM
+  assert.equal(d.guessHalf(day, "clock_out", { h: 4, m: 30 }, TZ), "PM");
+  assert.equal(d.guessHalf(day, "break_start", { h: 10, m: 0 }, TZ), "AM");
+  assert.equal(d.guessHalf(day, "lunch_start", { h: 12, m: 0 }, TZ), "PM");
+  assert.equal(d.guessHalf(day, "clock_out", { h: 6, m: 59 }, TZ), "PM"); // the first 6:59 after the clock-in
+  assert.equal(d.guessHalf(day, "clock_in", { h: 6, m: 55 }, TZ), "AM"); // a clock-in: the nearest
+  const [evening] = d.shown(d.newDraft(base([punch(1, "clock_in", 3, "14:00"), punch(2, "clock_out", 3, "22:00")])));
+  assert.equal(d.guessHalf(evening, "clock_out", { h: 11, m: 0 }, TZ), "PM");
+  assert.equal(d.guessHalf(evening, "clock_out", { h: 1, m: 0 }, TZ), "AM");
+  // A stray clock-out at 5:02 PM: a clock-in is the last before it, an end the first after.
+  const [stray] = d.shown(d.newDraft(base(withStray, { focus: [id(3)] })));
+  assert.equal(d.guessHalf(stray, "clock_in", { h: 8, m: 0 }, TZ), "AM");
+  assert.equal(d.guessHalf(stray, "break_end", { h: 6, m: 0 }, TZ), "PM");
+  // An added shift with nothing in it yet: 6 to 11 is the morning, 12 to 5 the afternoon.
+  const [empty] = d.shown(adding());
+  for (const [h, half] of [[6, "AM"], [11, "AM"], [12, "PM"], [1, "PM"], [5, "PM"]]) assert.equal(d.guessHalf(empty, "clock_in", { h, m: 0 }, TZ), half, h);
 });
 
 test("a typed time lands on the shift's day, or the next when it's before the clock-in", () => {
