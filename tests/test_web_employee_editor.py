@@ -366,3 +366,11 @@ async def test_you_can_set_your_own_pin(db_page: DbPage) -> None:
   await _set_pin(db_page, "2468", "2468")
   await db_page.user.should_see("PIN set.", retries=50)  # bcrypt takes a moment
   assert bcrypt.checkpw(b"2468", _pin_hash(db_page, ann).encode())
+
+
+async def test_a_four_digit_pin_is_saved(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  await db_page.user.open(f"/employee?id={bob}")
+  await _set_pin(db_page, "4827", "4827")
+  await db_page.user.should_see("PIN set.", retries=50)  # bcrypt takes a moment
+  assert bcrypt.checkpw(b"4827", _pin_hash(db_page, bob).encode())
