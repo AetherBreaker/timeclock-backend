@@ -37,7 +37,7 @@ EMPLOYEE_SAVE_FAILED = "The save didn't go through. Try again; your changes are 
 EMPLOYEE_CHANGED = "This employee changed while you were editing. Check the marked fields and save again."
 PIN_LENGTH = "A PIN is 4 to 12 digits"
 PIN_MISMATCH = "The PINs didn't match."
-PIN_NOTE = "Digits only. It takes effect when you press Set PIN, and every clock switches to it as soon as it's connected."
+PIN_NOTE = "4 to 12 digits. It takes effect when you press Set PIN, and every clock switches to it as soon as it's connected."
 PIN_SAVE_FAILED = "The PIN didn't go through. Try again."
 EMPLOYEE_OFFLINE = "The connection is interrupted. Your changes are kept; you can carry on once it's back."
 # The clock's own words for the same fields (timeclock-system `ui/text.py`).
