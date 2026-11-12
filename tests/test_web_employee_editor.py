@@ -8,6 +8,7 @@ from uuid import uuid4
 
 # Third party imports
 import bcrypt
+import pytest
 from nicegui import ui
 from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
@@ -17,7 +18,6 @@ from timeclock_backend.web import employee_editor, text
 
 if TYPE_CHECKING:
   # Third party imports
-  import pytest
   from page_sim import DbPage
 
 
@@ -321,8 +321,26 @@ async def test_a_pin_of_other_digits_is_refused(db_page: DbPage) -> None:
   before = _pin_hash(db_page, bob)
   await db_page.user.open(f"/employee?id={bob}")
   await _set_pin(db_page, "\u0661\u0662\u0663\u0664", "\u0661\u0662\u0663\u0664")
-  await db_page.user.should_see(text.PIN_DIGITS_ONLY)
+  await db_page.user.should_see(text.PIN_LENGTH)
   assert _pin_hash(db_page, bob) == before
+
+
+@pytest.mark.parametrize("pin", ["123", "1234567890123"])
+async def test_a_pin_of_the_wrong_length_is_refused(db_page: DbPage, pin: str) -> None:
+  bob = db_page.db.employees[1]
+  before = _pin_hash(db_page, bob)
+  await db_page.user.open(f"/employee?id={bob}")
+  await _set_pin(db_page, pin, pin)
+  await db_page.user.should_see(text.PIN_LENGTH)
+  assert _pin_hash(db_page, bob) == before
+
+
+async def test_a_twelve_digit_pin_is_saved(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  await db_page.user.open(f"/employee?id={bob}")
+  await _set_pin(db_page, "123456789012", "123456789012")
+  await db_page.user.should_see("PIN set.", retries=50)  # bcrypt takes a moment
+  assert bcrypt.checkpw(b"123456789012", _pin_hash(db_page, bob).encode())
 
 
 async def test_make_one_up_shows_four_digits_once(db_page: DbPage) -> None:

@@ -489,8 +489,8 @@ async def draw_employee_editor(  # noqa: C901, PLR0915 - one page: its state, it
   async def save_pin() -> None:
     # Saved at once and on its own, so a PIN never sits in a draft (spec §9); the draft stays as it is.
     typed = new_pin.value or ""
-    if not (typed.isascii() and typed.isdecimal()):  # the clock's check_new_pin
-      pin_error.set_text(text.PIN_DIGITS_ONLY)
+    if not (len(typed) in range(4, 13) and typed.isascii() and typed.isdecimal()):  # the clock's check_new_pin
+      pin_error.set_text(text.PIN_LENGTH)
       return
     if typed != (new_pin_again.value or ""):
       pin_error.set_text(text.PIN_MISMATCH)
