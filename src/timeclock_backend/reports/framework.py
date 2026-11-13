@@ -41,12 +41,17 @@ class Kind(Enum):
 
 @dataclass(frozen=True)
 class Column:
-  """A header `label` over the query's `field`; `labels` maps a `LABEL` column's stored values to their display text."""
+  """A header `label` over the query's `field`; `labels` maps a `LABEL` column's stored values to their display text.
+
+  `with_breaks`: shown only while breaks show (`fill_tab`'s `breaks`): a break detail, or regular hours, which equal paid
+  hours without breaks.
+  """
 
   label: str
   field: str
   kind: Kind
   labels: Mapping[str, str] | None = None
+  with_breaks: bool = False
 
 
 class Grain(Enum):
@@ -121,12 +126,13 @@ def _display(column: Column, value: Any) -> str:  # noqa: PLR0911
 
 
 async def fill_tab(  # noqa: C901
-  conn: AsyncConnection[DictRow], tab: Tab, period: Period, scope: Mapping[int, ScopeEmployee]
+  conn: AsyncConnection[DictRow], tab: Tab, period: Period, scope: Mapping[int, ScopeEmployee], *, breaks: bool = True
 ) -> list[list[str]]:
-  """The tab's header row then its display rows, zero rows included.
+  """The tab's header row then its display rows, zero rows included; without `breaks`, no `with_breaks` column.
 
   The query gets every scoped id, inactive too; an inactive employee is expected (gets zero rows) only if it returned a row for them.
   """
+  columns = [c for c in tab.columns if breaks or not c.with_breaks]
   start_at, end_at = period.bounds(SETTINGS.tz)
   cursor = await conn.execute(
     tab.query,
@@ -152,7 +158,7 @@ async def fill_tab(  # noqa: C901
       if (employee_id, day) in present:
         continue
       zero = {"employee_id": employee_id, "employee_name": employee.name, "day": day}
-      for column in tab.columns:
+      for column in columns:
         match column.kind:
           case Kind.NAME:
             zero[column.field] = employee.name
@@ -164,7 +170,7 @@ async def fill_tab(  # noqa: C901
 
   # A None sorts first: (False, ...) < (True, ...) and the placeholder keeps unorderable values out of the comparison.
   rows.sort(key=lambda row: [(row[f] is not None, row[f]) for f in tab.order_by])
-  return [[c.label for c in tab.columns], *([_display(c, row[c.field]) for c in tab.columns] for row in rows)]
+  return [[c.label for c in columns], *([_display(c, row[c.field]) for c in columns] for row in rows)]
 
 
 def write_workbook(path: Path, title: str, tabs: Sequence[tuple[str, list[list[str]]]]) -> None:
