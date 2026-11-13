@@ -132,6 +132,19 @@ async def test_a_row_opens_its_shift_in_the_editor(db_page: DbPage) -> None:
   assert base["focus"] == [str(start), str(end)]
   assert (base["employee"]["id"], base["employee"]["first"], base["tz"], base["own"]) == (bob, "Bob", "America/New_York", False)
   assert base["week"] == [ms(WEEK[0]), ms(WEEK[1])]
+  assert base["breaksEnabled"] is True
+
+
+async def test_the_editor_is_told_breaks_are_off(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  start = db_page.db.punch(bob, "clock_in", _ny(3, "08:00"))
+  db_page.db.punch(bob, "clock_out", _ny(3, "16:00"))
+  with db_page.db.admin() as conn:
+    conn.execute("UPDATE config.settings SET breaks_enabled = false")
+  await db_page.user.open("/")
+  db_page.user.find(marker=f"row-{start}").click()
+  await db_page.user.should_see(kind=ShiftEditor)
+  assert _editor(db_page).props["base"]["breaksEnabled"] is False
 
 
 async def _timeline_days(db_page: DbPage, *setup: LiteralString) -> dict[str, list[int | None]]:

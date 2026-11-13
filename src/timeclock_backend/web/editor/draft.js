@@ -159,6 +159,17 @@ export function shown(draft) {
   return [...picked, ...moved].sort((a, b) => a.start - b.start);
 }
 
+// Whether an entry's break details show (spec 2026-11-13): while breaks are on (a base saved before the setting existed
+// counts as on), or while a saved entry sharing a punch with `ids` (the entry's punches, moved-in strays' too) has a
+// break start or end, ignored ones included; with no ids, every saved punch. From the saved entries, not the draft, so a
+// break never vanishes mid-edit, and one brought in by a move, a join or a retimed clock-in stays fixable; a shift being
+// added has no saved punch.
+export function showsBreaks(draft, ids = null) {
+  if (draft.base.breaksEnabled !== false) return true;
+  const saved = ids === null ? draft.base.punches : entries(draft.base.punches, ALL).filter((e) => e.punches.some((p) => ids.has(p.id))).flatMap((e) => e.punches);
+  return saved.some((p) => p.kind === "break_start" || p.kind === "break_end");
+}
+
 const slot = () => ({ punches: [], missing: true });
 
 // The editor's fields for one entry (spec §6.5, §6.8): each slot holds the punches competing for it, a choice when there

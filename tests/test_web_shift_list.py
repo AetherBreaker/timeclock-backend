@@ -243,3 +243,50 @@ async def test_filters_in_the_address_open_filtered(db_page: DbPage) -> None:
   await db_page.user.open("/?group=999999&employee=999999")
   await db_page.user.should_see(marker=f"employee-{dee}")
   assert _cards(db_page) == [f"employee-{bob}", f"employee-{dee}"]
+
+
+def _breaks_off(page: DbPage) -> None:
+  with page.db.admin() as c:
+    c.execute("UPDATE config.settings SET breaks_enabled = false")
+
+
+async def test_breaks_off_hides_the_breaks_and_worked_columns_of_a_week_without_breaks(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  first = _shift(db_page, bob, 3, "08:00", "16:00")
+  _breaks_off(db_page)
+  await db_page.user.open("/")
+  await db_page.user.should_see(marker=f"week-paid-{bob}", content="8:00")
+  await db_page.user.should_see(marker=f"paid-{first}", content="8:00")
+  for marker in (f"head-breaks-{bob}", f"head-worked-{bob}", f"week-worked-{bob}"):
+    await db_page.user.should_not_see(marker=marker)
+
+
+async def test_breaks_off_keeps_the_columns_when_a_shift_has_a_break(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  _shift(db_page, bob, 2, "08:00", "16:00")
+  _shift(db_page, bob, 3, "08:00", "16:00")
+  db_page.db.punch(bob, "break_start", _ny(3, "10:00"))
+  db_page.db.punch(bob, "break_end", _ny(3, "10:15"))
+  _breaks_off(db_page)
+  await db_page.user.open("/")
+  for marker in (f"head-breaks-{bob}", f"head-worked-{bob}", f"week-worked-{bob}"):
+    await db_page.user.should_see(marker=marker)
+
+
+async def test_breaks_off_keeps_the_columns_for_a_stray_break_punch(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  _shift(db_page, bob, 4, "07:00", "15:30")
+  stray = db_page.db.punch(bob, "break_end", _ny(4, "17:02"))
+  _breaks_off(db_page)
+  await db_page.user.open("/")
+  await db_page.user.should_see(marker=f"row-{stray}")
+  await db_page.user.should_see(marker=f"head-breaks-{bob}")
+  await db_page.user.should_see(marker=f"head-worked-{bob}")
+
+
+async def test_breaks_on_keeps_the_columns(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  _shift(db_page, bob, 3, "08:00", "16:00")
+  await db_page.user.open("/")
+  for marker in (f"head-breaks-{bob}", f"head-worked-{bob}", f"week-worked-{bob}"):
+    await db_page.user.should_see(marker=marker)

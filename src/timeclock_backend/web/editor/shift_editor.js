@@ -23,9 +23,8 @@ const PAIR_LENGTH = { break: 15 * MINUTE, lunch: 30 * MINUTE }; // an added brea
 
 // A punch's ⋮ menu (spec §6.6): what it was meant as, or remove it.
 const PunchMenu = {
-  props: { punch: Object, tz: String, h24: Boolean },
+  props: { punch: Object, tz: String, h24: Boolean, breaks: { type: Boolean, default: true } },
   emits: ["apply"],
-  data: () => ({ kinds: KINDS }),
   methods: {
     time(ms) {
       return clockTime(ms, this.tz, this.h24);
@@ -33,6 +32,10 @@ const PunchMenu = {
   },
   computed: {
     D: () => D,
+    // While a shift's break details are hidden (spec 2026-11-13), a punch can't be made a break start or end.
+    kinds() {
+      return this.breaks ? KINDS : KINDS.filter(([kind]) => !kind.startsWith("break_"));
+    },
   },
   template: `
     <q-btn flat round dense size="sm" class="more" :aria-label="'Change the punch at ' + time(punch.at)">
@@ -69,6 +72,7 @@ const SlotField = {
     working: Boolean,
     adding: Boolean, // a shift being added: every punch is new, so none is marked so
     technical: Boolean,
+    breaks: { type: Boolean, default: true }, // for the punch menus
   },
   emits: ["apply"],
   computed: {
@@ -107,7 +111,7 @@ const SlotField = {
             <button class="radio" :disabled="readOnly" @click="$emit('apply', (d) => D.keep(d, place, { id: p.id }))">
               <span class="rd"></span>{{ time(p.at) }}<span v-if="tag(p)" class="tagx">{{ tag(p) }}</span>
             </button>
-            <punch-menu v-if="!readOnly" :punch="p" :tz="tz" :h24="h24" @apply="(f) => $emit('apply', f)" />
+            <punch-menu v-if="!readOnly" :punch="p" :tz="tz" :h24="h24" :breaks="breaks" @apply="(f) => $emit('apply', f)" />
           </template>
           <span class="radio-other">Another time</span>
           <time-field class="field-small" :entry="entry" :kind="kind" :tz="tz" :h24="h24" :read-only="readOnly" label="Another time" placeholder="--:--"
@@ -122,7 +126,7 @@ const SlotField = {
             :at="place.punches[0].at" :entry="entry" :kind="kind" :tz="tz" :h24="h24" :read-only="readOnly" :label="label"
             @set="(at) => $emit('apply', (d) => D.setTime(d, place.punches[0].id, at))" />
           <span v-if="tag(place.punches[0])" class="tagx">{{ tag(place.punches[0]) }}</span>
-          <punch-menu v-if="!readOnly" :punch="place.punches[0]" :tz="tz" :h24="h24" @apply="(f) => $emit('apply', f)" />
+          <punch-menu v-if="!readOnly" :punch="place.punches[0]" :tz="tz" :h24="h24" :breaks="breaks" @apply="(f) => $emit('apply', f)" />
         </div>
         <div v-if="was(place.punches[0])" class="was">
           {{ was(place.punches[0]) }}
@@ -188,6 +192,9 @@ export default {
       const found = D.refused(this.draft);
       return found === null ? [] : found.punchIds;
     },
+    weekBreaks() {
+      return D.showsBreaks(this.draft);
+    },
     views() {
       const d = this.draft;
       const all = this.shownAll;
@@ -206,6 +213,7 @@ export default {
             key: e.key,
             entry: e,
             sections: D.sections(d, e),
+            breaks: D.showsBreaks(d, new Set([...e.punches, ...moved].map((p) => p.id))),
             punches: [...e.punches, ...moved].sort(order),
             red,
             strays: new Set(moved.map((p) => p.id)),
@@ -503,6 +511,7 @@ export default {
                 :punches="v.punches"
                 :was="was(v)"
                 :breaks="v.hours === null ? [] : v.hours.breaks"
+                :breaks-shown="v.breaks"
                 :red="[...v.red]"
                 :changed="options.add ? [] : changed"
                 :now="now"
@@ -517,15 +526,15 @@ export default {
               <h4>{{ v.entry.kind === "stray" ? "Stray punch" + (v.entry.punches.length > 1 ? "es" : "") : "Shift" }}</h4>
               <div class="row-slots">
                 <editor-slot label="Clock in" kind="clock_in" :place="v.sections.clockIn" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :technical="options.technical" @apply="apply" />
+                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :technical="options.technical" :breaks="v.breaks" @apply="apply" />
                 <editor-slot label="Clock out" kind="clock_out" :place="v.sections.clockOut" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :technical="options.technical" :working="v.entry.kind === 'shift' && v.entry.end === null" @apply="apply" />
+                  :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :technical="options.technical" :working="v.entry.kind === 'shift' && v.entry.end === null" :breaks="v.breaks" @apply="apply" />
               </div>
               <div v-if="v.sections.others.length" class="others">
                 <div class="lab">Punches the hours ignore</div>
                 <div v-for="p in v.sections.others" :key="p.id" class="row-tight">
                   <span class="tagx">extra</span>{{ kindTime(p) }}
-                  <punch-menu v-if="!readOnly" :punch="p" :tz="tz" :h24="h24" @apply="apply" />
+                  <punch-menu v-if="!readOnly" :punch="p" :tz="tz" :h24="h24" :breaks="v.breaks" @apply="apply" />
                   <span v-if="options.technical" class="det">{{ D.punchDetail(p, { tz, h24 }) }}</span>
                 </div>
               </div>
@@ -535,16 +544,16 @@ export default {
                 </button>
               </div>
             </div>
-            <div v-for="what in ['break', 'lunch']" :key="what" class="card" v-show="v.entry.kind !== 'stray' || v.sections[what === 'break' ? 'breaks' : 'lunches'].length">
+            <div v-for="what in (v.breaks ? ['break', 'lunch'] : ['lunch'])" :key="what" class="card" v-show="v.entry.kind !== 'stray' || v.sections[what === 'break' ? 'breaks' : 'lunches'].length">
               <h4>{{ what === "break" ? "Breaks" : "Lunches" }}</h4>
               <template v-for="(pair, i) in v.sections[what === 'break' ? 'breaks' : 'lunches']" :key="i">
                 <div class="pair">
                   <span class="lbl">{{ what === "break" ? "Break" : "Lunch" }}</span>
                   <editor-slot label="Start" :kind="what + '_start'" :place="pair.start" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                    :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" @apply="apply" />
+                    :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :breaks="v.breaks" @apply="apply" />
                   <span class="to">to</span>
                   <editor-slot label="End" :kind="what + '_end'" :place="pair.end" :entry="v.entry" :base="baseById" :edits="draft.edits"
-                    :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" @apply="apply" />
+                    :red="v.red" :strays="v.strays" :tz="tz" :h24="h24" :read-only="readOnly" :adding="options.add" :breaks="v.breaks" @apply="apply" />
                   <span class="dur">
                     {{ duration(pair) }}
                     <!-- A one-item v-for binds the split once. -->
@@ -603,7 +612,7 @@ export default {
               <template v-for="v in shiftViews" :key="v.key">
                 <tr v-if="shiftViews.length > 1"><td colspan="2" class="sub">{{ span(v.entry) }}</td></tr>
                 <tr
-                  v-for="[label, field] in [['Worked', 'worked'], ['Paid breaks', 'paidBreak'], ['Paid hours', 'paid'], ['Unpaid breaks', 'unpaidBreak'], ['Lunch', 'lunch']]"
+                  v-for="[label, field] in (v.breaks ? [['Worked', 'worked'], ['Paid breaks', 'paidBreak'], ['Paid hours', 'paid'], ['Unpaid breaks', 'unpaidBreak'], ['Lunch', 'lunch']] : [['Paid hours', 'paid'], ['Lunch', 'lunch']])"
                   :key="field"
                   :class="{ total: field === 'paid' }"
                 >
@@ -621,7 +630,7 @@ export default {
                   <span :class="{ new: week.before.paid !== week.after.paid }">{{ hm(week.after.paid) }}</span> paid
                 </td>
               </tr>
-              <tr class="wk3">
+              <tr v-if="weekBreaks" class="wk3">
                 <td></td>
                 <td class="v">
                   <span v-if="week.before.worked !== week.after.worked" class="old">{{ hm(week.before.worked) }}</span>{{ hm(week.after.worked) }} worked

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
   # Standard library imports
   from email.message import EmailMessage
   from pathlib import Path
+  from uuid import UUID
 
 NY = ZoneInfo("America/New_York")
 SCHEDULED = datetime(2026, 11, 9, 6, tzinfo=NY)  # the Monday after the week 2026-11-02 to 2026-11-08
@@ -98,16 +99,105 @@ async def add_employee(db: Database, first: str, group: str, *, active: bool = T
   return row["id"]
 
 
-async def punch(db: Database, employee_id: int, kind: str, at: datetime) -> None:
+async def punch(db: Database, employee_id: int, kind: str, at: datetime) -> UUID:
+  punch_id = uuid4()
   async with await connect(db.name) as conn:
     await conn.execute(
       "INSERT INTO punches (id, employee_id, kind, at, instance_id) VALUES (%s, %s, %s, %s, 'test')",
-      (uuid4(), employee_id, kind, at.astimezone(UTC)),
+      (punch_id, employee_id, kind, at.astimezone(UTC)),
     )
+  return punch_id
+
+
+async def breaks_off(db: Database) -> None:
+  async with await connect(db.name) as conn:
+    await conn.execute("UPDATE config.settings SET breaks_enabled = false")
 
 
 def job(db: Database, groups: tuple[str, ...] | None = None) -> PayrollReportJob:
   return PayrollReportJob(db, RECIPIENTS, groups)
+
+
+SHIFT_SUMMARY_SHORT = [
+  "Employee Name",
+  "Day",
+  "Clock In",
+  "Clock Out",
+  "Corrected",
+  "Paid Hours",
+  "Lunches",
+  "Lunch Count",
+  "Lunch Times",
+]
+WEEKLY_HOURS_SHORT = ["Employee Name", "Paid Hours", "Lunches"]
+
+
+async def shift_with_break(db: Database, employee_id: int) -> tuple[UUID, UUID]:
+  """Tuesday 9:00 to 17:00 with a 12:00 to 12:10 break; the break's two punch ids."""
+  ids = [
+    await punch(db, employee_id, kind, datetime(2026, 11, 3, hour, minute, tzinfo=NY))
+    for kind, hour, minute in (("clock_in", 9, 0), ("break_start", 12, 0), ("break_end", 12, 10), ("clock_out", 17, 0))
+  ]
+  return ids[1], ids[2]
+
+
+async def test_breaks_off_and_no_break_punches_drop_the_break_columns_and_hours(migrated: Database, sent: Sent) -> None:
+  ann = await add_employee(migrated, "Ann", "Office")
+  await punch(migrated, ann, "clock_in", datetime(2026, 11, 3, 9, tzinfo=NY))
+  await punch(migrated, ann, "clock_out", datetime(2026, 11, 3, 17, tzinfo=NY))
+  await breaks_off(migrated)
+  await job(migrated, ("Office",)).main(SCHEDULED)
+  [(_, tabs)] = sent
+  assert tabs[f"{BOOK}/Punch Log"][0] == PUNCH_LOG_HEADER
+  assert tabs[f"{BOOK}/Shift Summary"][0] == SHIFT_SUMMARY_SHORT
+  assert tabs[f"{BOOK}/Shift Summary"][2][:6] == ["Ann Lee", "2026-11-03", "2026-11-03 09:00:00", "2026-11-03 17:00:00", "Yes", "8:00"]
+  assert tabs[f"{BOOK}/Weekly Hours"] == [WEEKLY_HOURS_SHORT, ["Ann Lee", "8:00", "0:00"]]
+
+
+async def test_breaks_off_with_a_break_punch_keeps_every_column(migrated: Database, sent: Sent) -> None:
+  await shift_with_break(migrated, await add_employee(migrated, "Ann", "Office"))
+  await breaks_off(migrated)
+  await job(migrated, ("Office",)).main(SCHEDULED)
+  [(_, tabs)] = sent
+  assert tabs[f"{BOOK}/Shift Summary"][0] == SHIFT_SUMMARY_HEADER
+  assert tabs[f"{BOOK}/Weekly Hours"][0] == WEEKLY_HOURS_HEADER
+
+
+async def test_breaks_on_keeps_every_column_without_break_punches(migrated: Database, sent: Sent) -> None:
+  ann = await add_employee(migrated, "Ann", "Office")
+  await punch(migrated, ann, "clock_in", datetime(2026, 11, 3, 9, tzinfo=NY))
+  await punch(migrated, ann, "clock_out", datetime(2026, 11, 3, 17, tzinfo=NY))
+  await job(migrated, ("Office",)).main(SCHEDULED)
+  [(_, tabs)] = sent
+  assert tabs[f"{BOOK}/Shift Summary"][0] == SHIFT_SUMMARY_HEADER
+  assert tabs[f"{BOOK}/Weekly Hours"][0] == WEEKLY_HOURS_HEADER
+
+
+async def test_another_groups_break_doesnt_keep_this_groups_columns(migrated: Database, sent: Sent) -> None:
+  ann = await add_employee(migrated, "Ann", "Office")
+  await punch(migrated, ann, "clock_in", datetime(2026, 11, 3, 9, tzinfo=NY))
+  await punch(migrated, ann, "clock_out", datetime(2026, 11, 3, 17, tzinfo=NY))
+  await shift_with_break(migrated, await add_employee(migrated, "Bob", "Warehouse"))
+  await breaks_off(migrated)
+  await job(migrated, ("Office", "Warehouse")).main(SCHEDULED)
+  [(_, tabs)] = sent
+  warehouse = BOOK.replace("Office", "Warehouse")
+  assert tabs[f"{BOOK}/Shift Summary"][0] == SHIFT_SUMMARY_SHORT
+  assert tabs[f"{BOOK}/Weekly Hours"][0] == WEEKLY_HOURS_SHORT
+  assert tabs[f"{warehouse}/Shift Summary"][0] == SHIFT_SUMMARY_HEADER
+  assert tabs[f"{warehouse}/Weekly Hours"][0] == WEEKLY_HOURS_HEADER
+
+
+async def test_a_voided_break_punch_doesnt_keep_the_columns(migrated: Database, sent: Sent) -> None:
+  start, end = await shift_with_break(migrated, await add_employee(migrated, "Ann", "Office"))
+  async with await connect(migrated.name) as conn:
+    for punch_id in (start, end):
+      await conn.execute("INSERT INTO punch_corrections (punch_id, action) VALUES (%s, 'void')", (punch_id,))
+  await breaks_off(migrated)
+  await job(migrated, ("Office",)).main(SCHEDULED)
+  [(_, tabs)] = sent
+  assert tabs[f"{BOOK}/Shift Summary"][0] == SHIFT_SUMMARY_SHORT
+  assert tabs[f"{BOOK}/Weekly Hours"] == [WEEKLY_HOURS_SHORT, ["Ann Lee", "8:00", "0:00"]]
 
 
 def test_week_is_the_last_full_monday_to_sunday() -> None:

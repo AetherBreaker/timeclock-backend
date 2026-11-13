@@ -68,12 +68,27 @@ class PayrollReportJob(JobBase):
       scopes: dict[str, dict[int, ScopeEmployee]] = {
         name: {e["id"]: ScopeEmployee(e["name"], e["active"]) for e in employees if e["group_id"] == known[name]} for name in names
       }
+      # Break columns and regular hours show unless breaks are off and the group took none that week (spec
+      # 2026-11-13); a missing settings row counts as on. The punches that count: punch_log's.
+      row = await (await conn.execute("SELECT breaks_enabled FROM config.settings")).fetchone()
+      start_at, end_at = period.bounds(SETTINGS.tz)
+      breaks: dict[str, bool] = {}
+      for name in names:
+        if row is None or row["breaks_enabled"]:
+          breaks[name] = True
+          continue
+        took = await conn.execute(
+          "SELECT EXISTS (SELECT 1 FROM punch_log WHERE employee_id = ANY(%(ids)s) AND kind IN ('break_start', 'break_end')"
+          " AND at >= %(start_at)s AND at < %(end_at)s) AS took",
+          {"ids": list(scopes[name]), "start_at": start_at, "end_at": end_at},
+        )
+        breaks[name] = bool((await took.fetchone() or {}).get("took"))
 
       with TemporaryDirectory() as tmp:
         paths: list[Path] = []
         for name in names:
           path = Path(tmp) / f"{name} {stem}.xlsx"
-          tabs = [(tab.name, await fill_tab(conn, tab, period, scopes[name])) for tab in PAYROLL_TABS]
+          tabs = [(tab.name, await fill_tab(conn, tab, period, scopes[name], breaks=breaks[name])) for tab in PAYROLL_TABS]
           write_workbook(path, f"{name} {stem}", tabs)
           paths.append(path)
         # Placeholder wording until the owner settles it from the first smoke-test email (spec §7.2).
