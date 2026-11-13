@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as d from "../../src/timeclock_backend/web/editor/draft.js";
-import { zonedTime } from "../../src/timeclock_backend/web/editor/rules.js";
+import { entries, flags, overBreaks, zonedTime } from "../../src/timeclock_backend/web/editor/rules.js";
 
 const TZ = "America/New_York";
 const OFFLINE = "The connection is interrupted. You can keep editing, and save your changes as soon as it's back.";
@@ -503,4 +503,28 @@ test("a saved break punch brought into a shift by a move or a join keeps its bre
   const joined = d.remove(d.remove(off(two), id(2)), id(3));
   const [shift] = d.shown(joined);
   assert.equal(d.showsBreaks(joined, new Set(shift.punches.map((p) => p.id))), true);
+});
+
+// Tuesday 7 to 3:30 with breaks at 9, 11 and 1 (Bob's third goes past a limit of 2).
+const threeBreaks = [
+  punch(1, "clock_in", 3, "07:00"),
+  ...[["09:00", "09:10"], ["11:00", "11:10"], ["13:00", "13:10"]].flatMap(([s, e], i) => [punch(10 + 2 * i, "break_start", 3, s), punch(11 + 2 * i, "break_end", 3, e)]),
+  punch(2, "clock_out", 3, "15:30"),
+];
+
+test("past the day's expected breaks, the callout names them and Mark as correct reviews them", () => {
+  const draft = d.newDraft(base(threeBreaks));
+  const [entry] = entries(d.punches(draft), Infinity);
+  const over = overBreaks([entry], 2, TZ);
+  const note = d.breaksNote(entry, over, { tz: TZ, limit: 2, first: "Bob" });
+  assert.deepEqual(note, {
+    text: "Bob took 3 breaks on Tuesday, and at most 2 are expected. Change them below, or mark them as correct if they're right.",
+    ids: [id(14)],
+  });
+  assert.equal(d.breaksNote(entry, overBreaks([entry], 3, TZ), { tz: TZ, limit: 3, first: "Bob" }), null);
+  const marked = note.ids.reduce((next, i) => d.confirm(next, i), draft);
+  assert.deepEqual(d.changes(marked, { tz: TZ, h24: false }), ["Marked the break at 1:00 PM as correct"]);
+  const [after] = entries(d.punches(marked), Infinity);
+  assert.equal(d.breaksNote(after, overBreaks([after], 2, TZ), { tz: TZ, limit: 2, first: "Bob" }), null);
+  assert.deepEqual(flags(after, overBreaks([after], 2, TZ)), ["breaks_reviewed"]);
 });

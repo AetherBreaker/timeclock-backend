@@ -32,6 +32,7 @@ from .rules import (
   entries,
   entry_hours,
   flags,
+  over_breaks,
   overlapping,
   problem,
   records,
@@ -150,6 +151,7 @@ def base_json(
     "tz": ctx.tz.key,
     "paidBreakMinutes": ctx.settings.paid_break_minutes,
     "breakLimitMinutes": ctx.settings.break_limit_minutes,
+    "maxBreaksPerDay": ctx.settings.max_breaks_per_day,
     "breaksEnabled": ctx.settings.breaks_enabled,
     "now": ms(now),
     "week": [ms(week[0]), ms(week[1])],
@@ -442,11 +444,14 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
         ui.label(text.long_day(entry.start.astimezone(tz).date())).classes("title-day")
 
         @ui.refreshable
-        def chips(shown: Entry) -> None:
-          for flag in flags(shown):
-            ui.label(text.flag_label(flag, problem(shown), len(shown.ignored))).classes(f"chip {text.CHIP[flag]}")
+        def chips(shown: Entry, theirs: Sequence[PagePunch]) -> None:
+          over = over_breaks(entries(theirs, as_of=now()), limit=ctx.settings.max_breaks_per_day, tz=tz)
+          day_breaks = max((over[p.id] for p in shown.punches if p.id in over), default=0)
+          for flag in flags(shown, over=over):
+            label = text.flag_label(flag, problem(shown), len(shown.ignored), breaks=day_breaks)
+            ui.label(label).classes(f"chip {text.CHIP[flag]}")
 
-        chips(entry)
+        chips(entry, punches)
     if technical:
       ui.label(text.employee_details(person, ctx.groups, tz, h24=h24)).classes("empdet")
     if own:
@@ -524,6 +529,6 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
         history_json(items, tz, h24=h24),
       )
       if entry is not None and (shown := _entry_holding(fresh, focus, as_of=now())) is not None:
-        chips.refresh(shown)
+        chips.refresh(shown, fresh)
 
   client.on_delete(live.subscribe(test=signin.test_database, callback=woken))

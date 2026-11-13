@@ -10,7 +10,7 @@
 // The hours count up to now, as the server's do.
 //
 // Adding a shift (spec §6.13), the base has a `day` and nothing opened; the new shift is the added punches alone.
-import { PAGE_INSTANCE_ID, PENDING, clockTime, entries, localDate, localParts, order, overlapping, records, refusal, zonedTime } from "./rules.js";
+import { PAGE_INSTANCE_ID, PENDING, byHand, clockTime, entries, localDate, localParts, order, overlapping, records, refusal, zonedTime } from "./rules.js";
 
 const ALL = Infinity;
 const LABEL = {
@@ -410,7 +410,10 @@ export function changeList(draft, { tz, h24 }) {
     else if (e.kind !== was.kind && e.at !== was.at) lines.push([was.at, `${LABEL[was.kind]} at ${time(was.at)} to ${LABEL[e.kind]} at ${time(e.at)}`, id]);
     else if (e.at !== was.at) lines.push([was.at, `${LABEL[was.kind]}: ${time(was.at)} to ${time(e.at)}`, id]);
     else if (e.kind !== was.kind) lines.push([was.at, `${time(was.at)}: ${LABEL[was.kind]} to ${LABEL[e.kind]}`, id]);
-    else if (e.confirmed) lines.push([was.at, `Marked the ${was.automatic ? "automatic " : ""}${WORD[was.kind]} at ${time(was.at)} as correct`, id]);
+    else if (e.confirmed) {
+      const what = `${was.automatic ? "automatic " : ""}${was.kind === "break_start" ? "break" : WORD[was.kind]}`;
+      lines.push([was.at, `Marked the ${what} at ${time(was.at)} as correct`, id]);
+    }
   }
   return lines.sort((a, b) => a[0] - b[0]).map(([, text, id]) => ({ id, text }));
 }
@@ -467,6 +470,22 @@ export function overlap(draft, { h24 = false } = {}) {
     text: `This overlaps ${employee.first}'s shift on ${dayName(found.start, tz)}, from ${time(found.start)} to ${end}. Change the times, or open that shift instead.`,
     open: `/shift?employee=${employee.id}&punch=${found.punches[0].id}`,
   };
+}
+
+// The too-many-breaks callout (owner, 2026-11-13): the entry's breaks past the day's expected count (rules.js overBreaks)
+// that nobody has reviewed, as {text, ids} for its Mark as correct; null when there are none.
+export function breaksNote(entry, over, { tz, limit, first }) {
+  const open = entry.punches.filter((p) => over.has(p.id) && !byHand(p));
+  if (open.length === 0) return null;
+  const days = new Map(open.map((p) => [localDate(p.at, tz), over.get(p.id)])); // an overnight shift may cross two
+  const said = listed(
+    [...days].map(([day, n]) => {
+      const [y, m, dd] = day.split("-").map(Number);
+      return `${n} breaks on ${DAYS[new Date(Date.UTC(y, m - 1, dd)).getUTCDay()]}`;
+    }),
+  );
+  const expected = `at most ${limit} ${limit === 1 ? "is" : "are"} expected`;
+  return { text: `${first} took ${said}, and ${expected}. Change them below, or mark them as correct if they're right.`, ids: open.map((p) => p.id) };
 }
 
 // The "Needs fixing" banner (spec §8), or null when the entry holds no problem.

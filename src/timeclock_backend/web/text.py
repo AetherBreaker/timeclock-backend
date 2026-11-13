@@ -159,8 +159,8 @@ def stamp(at: datetime, tz: ZoneInfo, *, h24: bool) -> str:
   return f"{_MONTHS[local.month - 1][:3]} {local.day}, {clock_time(at, tz, h24=h24)}"
 
 
-def flag_label(flag: Flag, problem: str | None, ignored: int) -> str:  # noqa: PLR0911 - one return per flag
-  """A row's chip (spec §5.5); `problem` and `ignored` say what needs fixing."""
+def flag_label(flag: Flag, problem: str | None, ignored: int, *, breaks: int = 0) -> str:  # noqa: PLR0911 - one return per flag
+  """A row's chip (spec §5.5); `problem` and `ignored` say what needs fixing, `breaks` the over breaks' day count."""
   match flag:
     case Flag.NEEDS_FIXING if problem == "stray":
       return "Stray punch" if ignored == 1 else "Stray punches"
@@ -173,6 +173,10 @@ def flag_label(flag: Flag, problem: str | None, ignored: int) -> str:  # noqa: P
       return "Automatic clock-out"
     case Flag.AUTOMATIC_FIXED:
       return "Automatic clock-out, fixed"
+    case Flag.BREAKS:
+      return f"{breaks} breaks"
+    case Flag.BREAKS_REVIEWED:
+      return f"{breaks} breaks, reviewed"
     case Flag.CHANGED:
       return "Changed"
     case Flag.WORKING:
@@ -183,6 +187,8 @@ def attention_label(key: str, n: int) -> str:
   """One count in the attention bar: "2 automatic clock-outs", "1 extra clock-in", "3 stray punches"."""
   if key == "automatic":
     return count(n, "automatic clock-out")
+  if key == "breaks":
+    return f"{count(n, 'shift')} with too many breaks"
   if key == "stray":
     return count(n, "stray punch", "stray punches")
   if key.startswith("extra:"):
@@ -197,7 +203,15 @@ def attention_headline(n: int) -> str:
 
 # A flag's chip color (spec §5.5).
 CHIP: Final[Mapping[Flag, str]] = MappingProxyType(
-  {Flag.NEEDS_FIXING: "red", Flag.AUTOMATIC: "orange", Flag.AUTOMATIC_FIXED: "grey", Flag.CHANGED: "grey", Flag.WORKING: "blue"}
+  {
+    Flag.NEEDS_FIXING: "red",
+    Flag.AUTOMATIC: "orange",
+    Flag.AUTOMATIC_FIXED: "grey",
+    Flag.BREAKS: "orange",
+    Flag.BREAKS_REVIEWED: "grey",
+    Flag.CHANGED: "grey",
+    Flag.WORKING: "blue",
+  }
 )
 
 

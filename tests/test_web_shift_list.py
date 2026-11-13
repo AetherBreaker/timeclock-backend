@@ -356,3 +356,42 @@ async def test_breaks_on_keeps_the_columns(db_page: DbPage) -> None:
   await db_page.user.open("/")
   for marker in (f"head-breaks-{bob}", f"head-worked-{bob}", f"week-worked-{bob}"):
     await db_page.user.should_see(marker=marker)
+
+
+def _three_breaks(page: DbPage, employee: int) -> tuple[UUID, list[UUID]]:
+  """Tuesday 8 to 4 with breaks at 9, 11 and 2, all written as a clock writes them (the owner's login counts as by hand)."""
+  clock = "timeclock_clock_front"  # the owner's login counts as by hand, which would read as reviewed
+  first = page.db.punch(employee, "clock_in", _ny(3, "08:00"), db_login=clock)
+  starts = []
+  for start, end in (("09:00", "09:10"), ("11:00", "11:10"), ("14:00", "14:10")):
+    starts.append(page.db.punch(employee, "break_start", _ny(3, start), db_login=clock))
+    page.db.punch(employee, "break_end", _ny(3, end), db_login=clock)
+  page.db.punch(employee, "clock_out", _ny(3, "16:00"), db_login=clock)
+  return first, starts
+
+
+async def test_a_day_past_its_expected_breaks_needs_attention_until_marked_correct(db_page: DbPage) -> None:
+  first, starts = _three_breaks(db_page, db_page.db.employees[1])
+  await db_page.user.open("/")
+  await db_page.user.should_see(marker=f"row-{first}")
+  await db_page.user.should_see("3 breaks")
+  await db_page.user.should_see(marker="attention-breaks", content="1 shift with too many breaks")
+  db_page.user.find(marker="attention-breaks").click()
+  await db_page.user.should_see(marker=f"row-{first}")
+  # Marked as correct: an amend to the third break's own time.
+  db_page.db.correct(starts[2], "amend", new_at=_ny(3, "14:00"))
+  await db_page.user.open("/")
+  await db_page.user.should_see("3 breaks, reviewed")
+  await db_page.user.should_not_see(marker="attention-breaks")
+  await db_page.user.should_not_see("Changed")  # the review says so alone
+
+
+async def test_breaks_within_the_setting_need_nothing(db_page: DbPage) -> None:
+  first, _ = _three_breaks(db_page, db_page.db.employees[1])
+  for limit in (3, 0):  # 0: no limit
+    with db_page.db.admin() as c:
+      c.execute("UPDATE config.settings SET max_breaks_per_day = %s", (limit,))
+    await db_page.user.open("/")
+    await db_page.user.should_see(marker=f"row-{first}")
+    await db_page.user.should_not_see("3 breaks")
+    await db_page.user.should_not_see(marker="attention-breaks")

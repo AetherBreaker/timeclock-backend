@@ -94,12 +94,34 @@ export function entries(punches, asOf) {
 // Changed by a person (shift_summary's `corrected`); the automatic clock-out shares the owner's postgres login.
 export const byHand = (p) => p.version !== null || p.addedOnPage || (p.dbLogin === "postgres" && !p.automatic);
 
-export function flags(entry) {
+// rules.py's over_breaks: the breaks past `limit` (max_breaks_per_day; 0: none) in their local day, as a Map of start
+// punch id to the day's count. A break is a shift's break start the hours count, on its own local date.
+export function overBreaks(found, limit, tz) {
+  const days = new Map();
+  for (const e of found) {
+    if (e.kind !== "shift") continue;
+    for (const p of e.punches) {
+      if (p.kind !== "break_start" || e.ignored.has(p.id)) continue;
+      const day = localDate(p.at, tz);
+      if (!days.has(day)) days.set(day, []);
+      days.get(day).push(p.id);
+    }
+  }
+  const over = new Map();
+  if (limit === 0) return over;
+  for (const ids of days.values()) for (const id of ids.slice(limit)) over.set(id, ids.length);
+  return over;
+}
+
+// rules.py's flags; `over` is overBreaks over the employee's entries.
+export function flags(entry, over) {
   const found = [];
   if (entry.kind === "stray" || entry.ignored.size > 0) found.push("needs_fixing");
   const automatic = entry.clockOut !== null && entry.clockOut.automatic ? entry.clockOut : null;
   if (automatic !== null) found.push(automatic.version === null ? "automatic" : "automatic_fixed");
-  if (entry.punches.some((p) => p !== automatic && byHand(p))) found.push("changed");
+  const extra = entry.punches.filter((p) => over.has(p.id));
+  if (extra.length > 0) found.push(extra.every((p) => byHand(p)) ? "breaks_reviewed" : "breaks");
+  if (entry.punches.some((p) => p !== automatic && !over.has(p.id) && byHand(p))) found.push("changed");
   if (entry.kind === "shift" && entry.end === null) found.push("working");
   return found;
 }

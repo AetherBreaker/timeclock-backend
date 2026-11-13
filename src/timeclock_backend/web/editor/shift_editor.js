@@ -3,7 +3,7 @@
 // (shift_editor.py's save_shift) and `saveResult` is the answer. The logic is draft.js's; this file draws it.
 import { markRaw } from "vue";
 import * as D from "shift-editor/draft.js";
-import { clockTime, entries, entryHours, flags, hm, localDate, order, weekHours } from "shift-editor/rules.js";
+import { clockTime, entries, entryHours, flags, hm, localDate, order, overBreaks, weekHours } from "shift-editor/rules.js";
 import TimeField from "shift-editor/time_field.js";
 import Timeline from "shift-editor/timeline.js";
 
@@ -201,6 +201,7 @@ export default {
       const shiftKeys = new Set(all.filter((e) => e.kind === "shift").map((e) => e.key));
       const before = new Map(entries(d.base.punches, Infinity).map((e) => [e.key, e]));
       const everything = entries(this.current, Infinity);
+      const over = overBreaks(everything, d.base.maxBreaksPerDay, this.tz);
       return all
         .filter((e) => !(e.kind === "stray" && shiftKeys.has(d.moved.get(e.key))))
         .map((e) => {
@@ -218,7 +219,8 @@ export default {
             red,
             strays: new Set(moved.map((p) => p.id)),
             banner: e.kind === "new" ? null : D.banner(e, { tz: this.tz, h24: this.h24 }), // a shift being added says what it lacks under Save
-            flags: flags(e),
+            flags: flags(e, over),
+            breaksNote: e.kind === "shift" ? D.breaksNote(e, over, { tz: this.tz, limit: d.base.maxBreaksPerDay, first: this.first }) : null,
             automatic: out !== null && out.automatic && out.version === null ? out : null,
             hours: e.kind === "shift" ? entryHours(e, this.current, this.hoursOpts) : null,
             before: old !== undefined && old.kind === "shift" ? entryHours(old, d.base.punches, this.hoursOpts) : null,
@@ -503,6 +505,11 @@ export default {
                 real time, or mark it as correct if {{ time(v.automatic.at) }} is right.
               </div>
               <button class="btn outline" @click="apply((d) => D.confirm(d, v.automatic.id))">Mark as correct</button>
+            </div>
+            <div v-if="v.breaksNote && !readOnly" class="callout orange">
+              <span class="page-icon icon-warning"></span>
+              <div class="grow">{{ v.breaksNote.text }}</div>
+              <button class="btn outline" @click="apply((d) => v.breaksNote.ids.reduce((next, id) => D.confirm(next, id), d))">Mark as correct</button>
             </div>
             <div v-if="v.punches.length" class="card">
               <h4>Timeline</h4>
