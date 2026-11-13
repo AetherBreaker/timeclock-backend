@@ -78,7 +78,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
     return f"/?{urlencode(present)}" if present else "/"
 
   async def reread(*, touch: bool) -> None:
-    nonlocal data, down, week, employee, group
+    nonlocal data, down, week
     async with reading:
       try:
         async with editor_transaction(pools, gate, storage, session, test_database=signin.test_database, touch=touch) as conn:
@@ -101,19 +101,27 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
         logger.warning("the shift list can't be read", exc_info=True)  # shown; the next live wake or reload tries again
         down = True
     if data is not None:
-      ctx = data[0]
       week_label.set_text(text.week_label(data[2]))
-      people = sorted(ctx.people.values(), key=lambda p: p.sort_key)
-      employee = employee if employee in ctx.people else None  # one in the address that's gone since
-      group = group if group in ctx.groups else None
-      options: list[tuple[ui.select, dict[Any, str], int | None]] = [
-        (employee_select, {None: "All employees", **{p.id: f"{p.name} · ID {p.username}" for p in people}}, employee),
-        (group_select, {None: "All groups", **dict(sorted(ctx.groups.items(), key=lambda g: g[1].casefold()))}, group),
-      ]
-      for select, wanted, value in options:
-        if select.options != wanted:
-          select.set_options(wanted, value=value)
+      fit_filters(data[0])
     await rows.refresh()  # awaited: an unawaited one runs later, so the first read's would redraw the first drawing
+
+  def fit_filters(ctx: Context) -> None:
+    """Give the Employee and Group filters `ctx`'s options, Employee only the chosen group's people.
+
+    A group or employee in the address that's gone since, or an employee outside the group, is dropped: the list shows
+    the rest rather than nothing. A dropped employee's select fires `choose`, which writes the address.
+    """
+    nonlocal employee, group
+    group = group if group in ctx.groups else None
+    people = [p for p in sorted(ctx.people.values(), key=lambda p: p.sort_key) if group is None or p.group_id == group]
+    employee = employee if any(p.id == employee for p in people) else None
+    options: list[tuple[ui.select, dict[Any, str], int | None]] = [
+      (employee_select, {None: "All employees", **{p.id: f"{p.name} · ID {p.username}" for p in people}}, employee),
+      (group_select, {None: "All groups", **dict(sorted(ctx.groups.items(), key=lambda g: g[1].casefold()))}, group),
+    ]
+    for select, wanted, value in options:
+      if select.options != wanted:
+        select.set_options(wanted, value=value)
 
   async def go(to: date | None) -> None:
     nonlocal week
@@ -131,6 +139,8 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
         employee = e.value
       case "group":
         group = e.value
+        if data is not None:
+          fit_filters(data[0])
       case _:
         role = e.value
     ui.navigate.history.replace(address())
