@@ -462,3 +462,24 @@ test("a draft survives a reload", () => {
   assert.equal(d.restore("{nonsense"), null);
   assert.equal(d.restore(JSON.stringify({ v: 99 })), null);
 });
+
+test("break details show while breaks are on, or while the saved shift has a break punch", () => {
+  const noBreak = [punch(1, "clock_in", 3, "07:00"), punch(4, "clock_out", 3, "15:30")];
+  const off = (punches) => d.newDraft({ ...base(punches), breaksEnabled: false });
+  const key = (draft) => d.shown(draft)[0].key;
+  const on = d.newDraft({ ...base(noBreak), breaksEnabled: true });
+  assert.equal(d.showsBreaks(on, key(on)), true);
+  const without = off(noBreak);
+  assert.equal(d.showsBreaks(without, key(without)), false);
+  const withBreak = off(plain);
+  assert.equal(d.showsBreaks(withBreak, key(withBreak)), true);
+  // From the saved punches: removing the break in the draft keeps its details until it's saved.
+  assert.equal(d.showsBreaks(d.remove(withBreak, id(2)), key(withBreak)), true);
+  // A base saved before the field existed (localStorage) shows them; a shift being added has none saved.
+  const old = d.newDraft(base(noBreak));
+  assert.equal(d.showsBreaks(old, key(old)), true);
+  assert.equal(d.showsBreaks(without, id(99)), false);
+  // Without a key, the whole loaded week.
+  assert.equal(d.showsBreaks(without), false);
+  assert.equal(d.showsBreaks(withBreak), true);
+});

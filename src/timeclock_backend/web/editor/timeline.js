@@ -14,6 +14,7 @@ export default {
     punches: Array, // the entry's punches and any stray moved into it
     was: Array, // [{id, at}]: where changed punches were
     breaks: Array, // rules.js totalHours's breaks, for where each one's paid part ends
+    breaksShown: { type: Boolean, default: true }, // false: the legend leaves out the break keys (spec 2026-11-13)
     red: Array, // ids the hours ignore
     changed: Array, // ids the draft changed or added
     now: Number,
@@ -140,7 +141,7 @@ export default {
         ><i v-if="m.label" :class="m.side">{{ m.label }}</i></div>
       </div>
       <div class="legend">
-        <span class="k k-work">Working</span><span class="k k-break">Break</span><span class="k k-unpaid">Unpaid break</span><span class="k k-lunch">Lunch</span>
+        <span class="k k-work">Working</span><template v-if="breaksShown"><span class="k k-break">Break</span><span class="k k-unpaid">Unpaid break</span></template><span class="k k-lunch">Lunch</span>
         <span class="k k-red">Needs fixing</span>
         <span v-if="!readOnly">Drag a marker to change its time, or type it below.</span>
       </div>
