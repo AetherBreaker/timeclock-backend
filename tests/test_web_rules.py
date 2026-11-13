@@ -26,6 +26,7 @@ from timeclock_backend.web.rules import (
   entries,
   entry_hours,
   flags,
+  over_breaks,
   overlapping,
   problem,
   records,
@@ -84,7 +85,7 @@ def test_a_double_clock_in_is_one_shift_holding_the_extra() -> None:
   assert entry.kind is EntryKind.SHIFT
   assert [p.id for p in entry.punches] == [p.id for p in punches]
   assert entry.ignored == {extra.id}
-  assert flags(entry) == (Flag.NEEDS_FIXING,)
+  assert flags(entry, over={}) == (Flag.NEEDS_FIXING,)
   assert problem(entry) == "extra:clock_in"
 
 
@@ -98,7 +99,7 @@ def test_strays_in_a_row_share_one_entry() -> None:
   assert [p.id for p in found[1].punches] == [p.id for p in strays]
   assert found[1].ignored == {p.id for p in strays}
   assert [p.id for p in found[3].punches] == [last_stray.id]
-  assert flags(found[1]) == (Flag.NEEDS_FIXING,)
+  assert flags(found[1], over={}) == (Flag.NEEDS_FIXING,)
   assert problem(found[1]) == "stray"
 
 
@@ -107,7 +108,7 @@ def test_an_anomaly_inside_an_open_shift_stays_in_it() -> None:
   [entry] = entries([first, extra], as_of=LATER)
   assert entry.end is None
   assert entry.ignored == {extra.id}
-  assert flags(entry) == (Flag.NEEDS_FIXING, Flag.WORKING)
+  assert flags(entry, over={}) == (Flag.NEEDS_FIXING, Flag.WORKING)
 
 
 def test_an_overnight_shift_is_one_entry_under_its_clock_in() -> None:
@@ -122,17 +123,17 @@ def test_a_punch_after_as_of_is_left_out() -> None:
   start, end = _p(IN, "7:00"), _p(OUT, "23:00")
   [entry] = entries([start, end], as_of=_at("15:00"))
   assert [p.id for p in entry.punches] == [start.id]
-  assert flags(entry) == (Flag.WORKING,)
+  assert flags(entry, over={}) == (Flag.WORKING,)
 
 
 def test_flags_name_an_unreviewed_automatic_clock_out_and_a_fixed_one() -> None:
   start = _p(IN, "7:58")
   automatic = _p(OUT, "23:00", automatic=True, db_login="postgres")
   [entry] = entries([start, automatic], as_of=LATER)
-  assert flags(entry) == (Flag.AUTOMATIC,)
+  assert flags(entry, over={}) == (Flag.AUTOMATIC,)
   fixed = replace(automatic, at=_at("17:05"), version=uuid4())
   [entry] = entries([start, fixed], as_of=LATER)
-  assert flags(entry) == (Flag.AUTOMATIC_FIXED,)
+  assert flags(entry, over={}) == (Flag.AUTOMATIC_FIXED,)
 
 
 def test_a_hand_change_flags_the_shift_changed() -> None:
@@ -143,10 +144,10 @@ def test_a_hand_change_flags_the_shift_changed() -> None:
     _p(IN, "7:00", db_login="postgres"),
   ):
     [entry] = entries([start, out], as_of=LATER)
-    assert flags(entry) == (Flag.CHANGED,), start
+    assert flags(entry, over={}) == (Flag.CHANGED,), start
   automatic = _p(OUT, "23:00", automatic=True, db_login="postgres", version=uuid4())
   [entry] = entries([_p(IN, "7:00"), automatic], as_of=LATER)
-  assert Flag.CHANGED not in flags(entry)
+  assert Flag.CHANGED not in flags(entry, over={})
 
 
 def test_entry_hours_charge_the_days_break_allowance_across_shifts() -> None:
@@ -283,3 +284,60 @@ def test_ids_order_punches_at_the_same_instant() -> None:
   out = _p(OUT, "7:00", id=low)
   # The clock-out sorts first, so it's a stray, and the clock-in opens a shift.
   assert [(e.kind, e.key) for e in entries([start, out], as_of=LATER)] == [(EntryKind.STRAY, low), (EntryKind.SHIFT, high)]
+
+
+def test_breaks_past_the_days_limit_are_over_with_the_days_count() -> None:
+  # Tuesday: three breaks in one shift. Wednesday: one in a morning shift, two in an afternoon one.
+  tue2, tue3 = _p(BREAK_START, "11:00"), _p(BREAK_START, "14:00")
+  tuesday = [
+    *(_p(IN, "7:00"), _p(BREAK_START, "9:00"), _p(BREAK_END, "9:10")),
+    *(tue2, _p(BREAK_END, "11:10"), tue3, _p(BREAK_END, "14:10"), _p(OUT, "16:00")),
+  ]
+  wed2, wed3 = _p(BREAK_START, "14:00", day=4), _p(BREAK_START, "18:00", day=4)
+  wednesday = [
+    *(_p(IN, "7:00", day=4), _p(BREAK_START, "9:00", day=4), _p(BREAK_END, "9:10", day=4), _p(OUT, "12:00", day=4)),
+    *(_p(IN, "13:00", day=4), wed2, _p(BREAK_END, "14:10", day=4), wed3, _p(BREAK_END, "18:10", day=4), _p(OUT, "20:00", day=4)),
+  ]
+  found = entries([*tuesday, *wednesday], as_of=LATER)
+  assert over_breaks(found, limit=2, tz=TZ) == {tue3.id: 3, wed3.id: 3}
+  assert over_breaks(found, limit=1, tz=TZ) == {tue2.id: 3, tue3.id: 3, wed2.id: 3, wed3.id: 3}
+  assert over_breaks(found, limit=3, tz=TZ) == {}
+  assert over_breaks(found, limit=0, tz=TZ) == {}  # no limit
+
+
+def test_only_counted_breaks_on_their_own_local_day_go_over() -> None:
+  # A break start the hours ignore (one already open) isn't a break; a stray one isn't either. An overnight shift's
+  # breaks count on the day each starts.
+  second = _p(BREAK_START, "11:00")
+  punches = [
+    *(_p(IN, "7:00"), _p(BREAK_START, "9:00"), _p(BREAK_START, "9:05"), _p(BREAK_END, "9:10")),
+    *(second, _p(BREAK_END, "11:10"), _p(OUT, "16:00"), _p(BREAK_START, "17:00")),
+  ]
+  found = entries(punches, as_of=LATER)
+  assert over_breaks(found, limit=2, tz=TZ) == {}
+  assert over_breaks(found, limit=1, tz=TZ) == {second.id: 2}
+  night = [
+    *(_p(IN, "22:00", day=5), _p(BREAK_START, "23:30", day=5), _p(BREAK_END, "23:40", day=5)),
+    *(_p(BREAK_START, "1:00", day=6), _p(BREAK_END, "1:10", day=6), _p(BREAK_START, "3:00", day=6), _p(BREAK_END, "3:10", day=6)),
+    _p(OUT, "6:00", day=6),
+  ]
+  assert over_breaks(entries(night, as_of=LATER), limit=2, tz=TZ) == {}
+
+
+def test_flags_name_too_many_breaks_and_reviewed_ones() -> None:
+  third = _p(BREAK_START, "14:00")
+  punches = [
+    *(_p(IN, "7:00"), _p(BREAK_START, "9:00"), _p(BREAK_END, "9:10"), _p(BREAK_START, "11:00"), _p(BREAK_END, "11:10")),
+    *(third, _p(BREAK_END, "14:10"), _p(OUT, "16:00")),
+  ]
+  [entry] = entries(punches, as_of=LATER)
+  assert flags(entry, over=over_breaks([entry], limit=2, tz=TZ)) == (Flag.BREAKS,)
+  assert flags(entry, over={}) == ()
+  # Marked as correct (an amend to the same values), moved by hand, or added on the page: reviewed, and not Changed too.
+  for reviewed in (
+    replace(third, version=uuid4()),
+    replace(third, at=_at("13:55"), version=uuid4()),
+    replace(third, added_on_page=True),
+  ):
+    [entry] = entries([reviewed if p is third else p for p in punches], as_of=LATER)
+    assert flags(entry, over=over_breaks([entry], limit=2, tz=TZ)) == (Flag.BREAKS_REVIEWED,), reviewed

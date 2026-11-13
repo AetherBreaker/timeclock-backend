@@ -147,6 +147,22 @@ async def test_the_editor_is_told_breaks_are_off(db_page: DbPage) -> None:
   assert _editor(db_page).props["base"]["breaksEnabled"] is False
 
 
+async def test_a_day_past_its_expected_breaks_shows_on_the_title_and_reaches_the_editor(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  clock = "timeclock_clock_front"  # the owner's login counts as by hand, which would read as reviewed
+  start = db_page.db.punch(bob, "clock_in", _ny(3, "08:00"), db_login=clock)
+  for begin, end in (("09:00", "09:10"), ("11:00", "11:10"), ("14:00", "14:10")):
+    db_page.db.punch(bob, "break_start", _ny(3, begin), db_login=clock)
+    db_page.db.punch(bob, "break_end", _ny(3, end), db_login=clock)
+  db_page.db.punch(bob, "clock_out", _ny(3, "16:00"), db_login=clock)
+  with db_page.db.admin() as conn:
+    conn.execute("UPDATE config.settings SET max_breaks_per_day = 2")
+  await db_page.user.open(f"/shift?employee={bob}&punch={start}")
+  await db_page.user.should_see(kind=ShiftEditor)
+  await db_page.user.should_see("3 breaks")
+  assert _editor(db_page).props["base"]["maxBreaksPerDay"] == 2  # noqa: PLR2004 - the setting just written
+
+
 async def _timeline_days(db_page: DbPage, *setup: LiteralString) -> dict[str, list[int | None]]:
   """The opened editor's `timelineDays` for Bob's shift on Tue Nov 3, after `setup` runs on the production database."""
   with db_page.db.admin() as conn:

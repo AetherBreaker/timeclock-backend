@@ -18,7 +18,7 @@ from timeclock_schema.enums import EmployeeRole, PunchKind
 from . import text
 from .db import DatabaseChangedError, editor_transaction
 from .gate import SignedOutError
-from .rules import EntryKind, Flag, entries, entry_hours, flags, problem, week_hours
+from .rules import EntryKind, Flag, entries, entry_hours, flags, over_breaks, problem, week_hours
 from .shell import prefs
 from .store import load_context, load_punches
 
@@ -41,7 +41,8 @@ logger = logging.getLogger(__name__)
 
 _BREAK_KINDS: Final = frozenset({PunchKind.BREAK_START, PunchKind.BREAK_END})
 # The attention bar's counts, in the mockup's order: automatic clock-outs, then what needs fixing.
-_ATTENTION_ORDER: Final = ("automatic", *(f"extra:{kind}" for kind in PunchKind), "stray", "mixed")
+_ATTENTION_ORDER: Final = ("automatic", "breaks", *(f"extra:{kind}" for kind in PunchKind), "stray", "mixed")
+_REVIEW: Final = {Flag.AUTOMATIC: "automatic", Flag.BREAKS: "breaks"}  # orange flags' attention keys
 
 
 async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its reads and its drawing, top to bottom
@@ -219,8 +220,9 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
         return
       ctx, punches, _, start, end, at = data
       tz = ctx.tz
-      # Each shown employee's entries meeting the week: one starting in it, or one running into it.
-      shown: list[tuple[Person, list[PagePunch], list[tuple[Entry, tuple[Flag, ...], set[str]]]]] = []
+      # Each shown employee's entries meeting the week (one starting in it, or one running into it): its flags, its
+      # attention keys, and its over breaks' day count (`over_breaks`; 0 for none).
+      shown: list[tuple[Person, list[PagePunch], list[tuple[Entry, tuple[Flag, ...], set[str], int]]]] = []
       for employee_id, theirs in punches.items():
         person = ctx.people[employee_id]
         if (employee is not None and person.id != employee) or (group is not None and person.group_id != group):
@@ -228,11 +230,13 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
         if role is not None and person.role != role:
           continue
         found = []
-        for e in entries(theirs, as_of=at):
+        every = entries(theirs, as_of=at)
+        over = over_breaks(every, limit=ctx.settings.max_breaks_per_day, tz=tz)
+        for e in every:
           if e.start < end and (e.start >= start or (e.end or at) > start):
-            found_flags = flags(e)
-            keys = {k for k in (problem(e), "automatic" if Flag.AUTOMATIC in found_flags else None) if k is not None}
-            found.append((e, found_flags, keys))
+            found_flags = flags(e, over=over)
+            keys = {k for k in (problem(e), *(_REVIEW.get(f) for f in found_flags)) if k is not None}
+            found.append((e, found_flags, keys, max((over[p.id] for p in e.punches if p.id in over), default=0)))
         if found:
           shown.append((person, theirs, found))
       shown.sort(key=lambda s: s[0].sort_key)
@@ -240,7 +244,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
       counts: dict[str, int] = {}
       needing = 0
       for _, _, found in shown:
-        for _, _, keys in found:
+        for _, _, keys, _ in found:
           needing += bool(keys)
           for k in keys:
             counts[k] = counts.get(k, 0) + 1
@@ -250,7 +254,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
           with ui.row().classes("attention-counts"):
             ui.label(text.attention_headline(needing) if needing else "Nothing needs attention this week.").classes("attention-lead")
             for k in sorted(counts, key=_ATTENTION_ORDER.index):
-              color = "orange" if k == "automatic" else "red"
+              color = "orange" if k in _REVIEW.values() else "red"
               ui.button(text.attention_label(k, counts[k]), on_click=partial(focus, None if attention == k else k)).props(
                 "flat dense no-caps"
               ).classes(f"chip {color}{' on' * (attention == k)}").mark(f"attention-{k}")
@@ -278,7 +282,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
             total = week_hours(theirs, settings=ctx.settings, tz=tz, week=(start, end), now=at)
             # Breaks show unless they're off and no shift here has a break punch, ignored ones included (spec
             # 2026-11-13); without breaks worked equals paid, so Worked goes with them.
-            breaks = ctx.settings.breaks_enabled or any(p.kind in _BREAK_KINDS for e, _, _ in visible for p in e.punches)
+            breaks = ctx.settings.breaks_enabled or any(p.kind in _BREAK_KINDS for e, _, _, _ in visible for p in e.punches)
             with ui.row().classes("tot"):  # paid hours: worked plus paid breaks, as the weekly hours alert counts them
               ui.label("Week:")
               ui.label(text.hm(total.worked + total.paid_break)).classes("tot-hours").mark(f"week-paid-{person.id}")
@@ -304,8 +308,8 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
                 TextElement(tag="th", text="Clock")
                 TextElement(tag="th", text="Punches")
               TextElement(tag="th", text="")
-            for e, found_flags, _ in visible:
-              edge = " red" if Flag.NEEDS_FIXING in found_flags else " orange" if Flag.AUTOMATIC in found_flags else ""
+            for e, found_flags, _, day_breaks in visible:
+              edge = " red" if Flag.NEEDS_FIXING in found_flags else " orange" if _REVIEW.keys() & set(found_flags) else ""
               link = f"/shift?{urlencode({'employee': person.id, 'punch': e.key, 'back': address().partition('?')[2]})}"
               row = ui.element("tr").classes(f"r{edge}{' mine' * own}").mark(f"row-{e.key}")
               row.on("click", partial(ui.navigate.to, link))
@@ -356,7 +360,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
                   if own:
                     ui.element("span").classes("page-icon icon-lock")
                   for flag in found_flags:
-                    label = text.flag_label(flag, problem(e), len(e.ignored))
+                    label = text.flag_label(flag, problem(e), len(e.ignored), breaks=day_breaks)
                     ui.label(label).classes(f"chip {text.CHIP[flag]}")
       if not drawn:
         ui.label("No shifts this week." if not shown else "No shifts need attention this week.").classes("muted empty")

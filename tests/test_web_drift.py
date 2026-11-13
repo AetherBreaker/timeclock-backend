@@ -95,6 +95,7 @@ def _case(
   span: tuple[datetime, datetime] | None = None,
   paid_break_minutes: int = 30,
   break_limit_minutes: int = 15,
+  max_breaks_per_day: int = 2,
   walls: list[tuple[str, str]] = (),  # pyright: ignore[reportArgumentType]
 ) -> dict[str, Any]:
   zone = ZoneInfo(tz)
@@ -104,6 +105,7 @@ def _case(
     "tz": tz,
     "paidBreakMinutes": paid_break_minutes,
     "breakLimitMinutes": break_limit_minutes,
+    "maxBreaksPerDay": max_breaks_per_day,
     "asOf": _ms(as_of),
     "week": [_ms(week[0]), _ms(week[1])],
     "punches": punches,
@@ -193,6 +195,7 @@ def _random_case(rng: random.Random) -> dict[str, Any]:  # noqa: C901 - one gene
     span=(span_start, span_start + timedelta(hours=rng.randint(1, 10))),
     paid_break_minutes=rng.choice((0, 15, 30)),
     break_limit_minutes=rng.choice((0, 10, 15)),
+    max_breaks_per_day=rng.choice((0, 1, 2)),
     walls=[
       ((day + timedelta(days=rng.randint(0, 2))).isoformat(), f"{rng.randint(0, 23):02d}:{rng.randint(0, 59):02d}") for _ in range(6)
     ],
@@ -223,6 +226,20 @@ def _hand_picked() -> list[dict[str, Any]]:
   mon, tues = date(2026, 11, 2), date(2026, 11, 3)
   two_days = [_punch(_local(d, c), k) for d in (mon, tues) for c, k in (("07:00", IN), ("15:00", OUT))]
   remove_monday_out = {**_draft_of(two_days[1]), "removed": True}
+  three_breaks = [
+    _punch(_local(tue, c), k)
+    for c, k in (
+      ("07:00", IN),
+      ("09:00", BS),
+      ("09:10", BE),
+      ("11:00", BS),
+      ("11:10", BE),
+      ("14:00", BS),
+      ("14:10", BE),
+      ("16:00", OUT),
+    )
+  ]
+  reviewed = [*three_breaks[:5], {**three_breaks[5], "version": str(uuid4())}, *three_breaks[6:]]
   return [
     _case("America/New_York", double, as_of=later, week_of=_local(tue, "12:00"), touched=[double[0]["id"]]),
     _case("America/New_York", strays, as_of=later, week_of=_local(tue, "12:00")),
@@ -259,6 +276,9 @@ def _hand_picked() -> list[dict[str, Any]]:
       week_of=_local(mon, "12:00"),
       span=(_local(mon, "14:00"), _local(mon, "18:00")),
     ),
+    _case("America/New_York", three_breaks, as_of=later, week_of=_local(tue, "12:00")),
+    _case("America/New_York", reviewed, as_of=later, week_of=_local(tue, "12:00")),
+    _case("America/New_York", three_breaks, as_of=later, week_of=_local(tue, "12:00"), max_breaks_per_day=0),
   ]
 
 
@@ -297,6 +317,7 @@ def _answer(case: dict[str, Any]) -> dict[str, Any]:
   base = {p.id: p for p in punches}
   draft = [_draft_punch(d) for d in case["draft"]]
   found = rules.entries(punches, as_of=as_of)
+  over = rules.over_breaks(found, limit=case["maxBreaksPerDay"], tz=tz)
   records = rules.records(base, [d for d in draft if not rules.conflicts(base, [d])])
   after = rules.apply(punches, records)
   refused = rules.refusal(punches, after, {UUID(t) for t in case["touched"]}, as_of=as_of)
@@ -306,7 +327,8 @@ def _answer(case: dict[str, Any]) -> dict[str, Any]:
   millis = timedelta(milliseconds=1)
   return {
     "entries": [_entry_json(e) for e in found],
-    "flags": [[f.value for f in rules.flags(e)] for e in found],
+    "flags": [[f.value for f in rules.flags(e, over=over)] for e in found],
+    "over": sorted([str(i), n] for i, n in over.items()),
     "problems": [rules.problem(e) for e in found],
     "hours": [None if h is None else [h.worked // millis, h.paid_break // millis, h.unpaid // millis] for h in hours],
     "week": [week.worked // millis, week.paid_break // millis, week.unpaid // millis],

@@ -12,17 +12,17 @@ from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 # Third party imports
+from timeclock_schema.enums import PunchKind
 from timeclock_schema.models import Punch
 from timeclock_schema.shifts import HoursTotals, Shift, build_timeline, total_hours
 
 if TYPE_CHECKING:
   # Standard library imports
   from collections.abc import Collection, Iterable, Mapping, Sequence
-  from datetime import datetime
+  from datetime import date, datetime
   from zoneinfo import ZoneInfo
 
   # Third party imports
-  from timeclock_schema.enums import PunchKind
   from timeclock_schema.models import Settings
 
 # Punches added on the page say so in `instance_id` (spec §14); `edit_id` is what the database checks.
@@ -151,12 +151,33 @@ class Flag(StrEnum):
   NEEDS_FIXING = "needs_fixing"  # red: an ignored punch, or a stray run
   AUTOMATIC = "automatic"  # orange: an automatic clock-out nobody has reviewed
   AUTOMATIC_FIXED = "automatic_fixed"  # grey
+  BREAKS = "breaks"  # orange: a break past the day's expected count (`over_breaks`) nobody has reviewed
+  BREAKS_REVIEWED = "breaks_reviewed"  # grey
   CHANGED = "changed"  # grey: a punch changed or added by hand
   WORKING = "working"  # blue: open
 
 
-def flags(entry: Entry) -> tuple[Flag, ...]:
-  """The entry's flags; a reviewed automatic clock-out says so alone rather than also as Changed."""
+def over_breaks(found: Iterable[Entry], *, limit: int, tz: ZoneInfo) -> dict[UUID, int]:
+  """The breaks past `limit` (`max_breaks_per_day`; 0: none) in their local day, by start punch, with the day's count.
+
+  A break is a shift's break start the hours count. Its day is its own local date, as the paid break allowance charges
+  it. `found` comes in time order (`entries`), so each day's list does too.
+  """
+  days: dict[date, list[UUID]] = {}
+  for e in found:
+    if e.kind is EntryKind.SHIFT:
+      for p in e.punches:
+        if p.kind is PunchKind.BREAK_START and p.id not in e.ignored:
+          days.setdefault(p.at.astimezone(tz).date(), []).append(p.id)
+  return {} if limit == 0 else {i: len(ids) for ids in days.values() for i in ids[limit:]}
+
+
+def flags(entry: Entry, *, over: Mapping[UUID, int]) -> tuple[Flag, ...]:
+  """The entry's flags; `over` is `over_breaks` over the employee's entries.
+
+  A reviewed automatic clock-out, or an over break reviewed (corrected, if only marked as correct, or added on the page),
+  says so alone rather than also as Changed.
+  """
   found: list[Flag] = []
   if entry.kind is EntryKind.STRAY or entry.ignored:
     found.append(Flag.NEEDS_FIXING)
@@ -164,7 +185,9 @@ def flags(entry: Entry) -> tuple[Flag, ...]:
   automatic = out if out is not None and out.automatic else None
   if automatic is not None:
     found.append(Flag.AUTOMATIC if automatic.version is None else Flag.AUTOMATIC_FIXED)
-  if any(p.by_hand for p in entry.punches if p is not automatic):
+  if extra := [p for p in entry.punches if p.id in over]:
+    found.append(Flag.BREAKS_REVIEWED if all(p.by_hand for p in extra) else Flag.BREAKS)
+  if any(p.by_hand for p in entry.punches if p is not automatic and p.id not in over):
     found.append(Flag.CHANGED)
   if entry.kind is EntryKind.SHIFT and entry.end is None:
     found.append(Flag.WORKING)
