@@ -159,21 +159,23 @@ export function shown(draft) {
   return [...picked, ...moved].sort((a, b) => a.start - b.start);
 }
 
+// Whether an entry's break details show (spec 2026-11-13): while breaks are on (a base saved before the setting existed
+// counts as on), or while a saved entry sharing a punch with `ids` (the entry's punches, moved-in strays' too) has a
+// break start or end, ignored ones included; with no ids, every saved punch. From the saved entries, not the draft, so a
+// break never vanishes mid-edit, and one brought in by a move, a join or a retimed clock-in stays fixable; a shift being
+// added has no saved punch.
+export function showsBreaks(draft, ids = null) {
+  if (draft.base.breaksEnabled !== false) return true;
+  const saved = ids === null ? draft.base.punches : entries(draft.base.punches, ALL).filter((e) => e.punches.some((p) => ids.has(p.id))).flatMap((e) => e.punches);
+  return saved.some((p) => p.kind === "break_start" || p.kind === "break_end");
+}
+
 const slot = () => ({ punches: [], missing: true });
 
 // The editor's fields for one entry (spec §6.5, §6.8): each slot holds the punches competing for it, a choice when there
 // are several. In a shift, every clock-in shares Clock in, an ignored start during its break or lunch shares that Start,
 // and an ignored end straight after a valid one shares that End; anything else ignored is in `others`. A stray's
 // punches, and a moved-in stray's, go to their kinds' slots, an end closing a start of its own run.
-// Whether a shift's break details show (spec 2026-11-13): while breaks are on (a base saved before the setting existed
-// counts as on), or while the saved shift `key` has a break start or end, ignored ones included; with no key, the whole
-// loaded week. From the saved punches, not the draft, so nothing vanishes mid-edit; a shift being added has none saved.
-export function showsBreaks(draft, key = null) {
-  if (draft.base.breaksEnabled !== false) return true;
-  const saved = key === null ? draft.base.punches : (entries(draft.base.punches, ALL).find((e) => e.key === key)?.punches ?? []);
-  return saved.some((p) => p.kind === "break_start" || p.kind === "break_end");
-}
-
 export function sections(draft, entry) {
   const found = { clockIn: slot(), clockOut: slot(), breaks: [], lunches: [], others: [], strays: [] };
   const pairs = { break: found.breaks, lunch: found.lunches };

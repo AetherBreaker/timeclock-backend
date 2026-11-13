@@ -213,7 +213,7 @@ export default {
             key: e.key,
             entry: e,
             sections: D.sections(d, e),
-            breaks: D.showsBreaks(d, e.key),
+            breaks: D.showsBreaks(d, new Set([...e.punches, ...moved].map((p) => p.id))),
             punches: [...e.punches, ...moved].sort(order),
             red,
             strays: new Set(moved.map((p) => p.id)),

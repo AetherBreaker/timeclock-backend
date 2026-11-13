@@ -463,23 +463,44 @@ test("a draft survives a reload", () => {
   assert.equal(d.restore(JSON.stringify({ v: 99 })), null);
 });
 
-test("break details show while breaks are on, or while the saved shift has a break punch", () => {
+test("break details show while breaks are on, or while a saved shift sharing a punch has a break punch", () => {
   const noBreak = [punch(1, "clock_in", 3, "07:00"), punch(4, "clock_out", 3, "15:30")];
   const off = (punches) => d.newDraft({ ...base(punches), breaksEnabled: false });
-  const key = (draft) => d.shown(draft)[0].key;
+  const of = (entry) => new Set(entry.punches.map((p) => p.id));
   const on = d.newDraft({ ...base(noBreak), breaksEnabled: true });
-  assert.equal(d.showsBreaks(on, key(on)), true);
+  assert.equal(d.showsBreaks(on, of(d.shown(on)[0])), true);
   const without = off(noBreak);
-  assert.equal(d.showsBreaks(without, key(without)), false);
+  assert.equal(d.showsBreaks(without, of(d.shown(without)[0])), false);
   const withBreak = off(plain);
-  assert.equal(d.showsBreaks(withBreak, key(withBreak)), true);
+  assert.equal(d.showsBreaks(withBreak, of(d.shown(withBreak)[0])), true);
   // From the saved punches: removing the break in the draft keeps its details until it's saved.
-  assert.equal(d.showsBreaks(d.remove(withBreak, id(2)), key(withBreak)), true);
-  // A base saved before the field existed (localStorage) shows them; a shift being added has none saved.
+  const removed = d.remove(withBreak, id(2));
+  assert.equal(d.showsBreaks(removed, of(d.shown(removed)[0])), true);
+  // A base saved before the field existed (localStorage) shows them; a shift being added has no saved punch.
   const old = d.newDraft(base(noBreak));
-  assert.equal(d.showsBreaks(old, key(old)), true);
-  assert.equal(d.showsBreaks(without, id(99)), false);
-  // Without a key, the whole loaded week.
+  assert.equal(d.showsBreaks(old, of(d.shown(old)[0])), true);
+  assert.equal(d.showsBreaks(without, new Set([id(99)])), false);
+  // Without ids, every saved punch.
   assert.equal(d.showsBreaks(without), false);
   assert.equal(d.showsBreaks(withBreak), true);
+});
+
+test("a saved break punch brought into a shift by a move or a join keeps its break details", () => {
+  const off = (punches) => d.newDraft({ ...base(punches), breaksEnabled: false });
+  // A stray break end moved into the shift: the shift's own saved entry has no break, the stray's does.
+  const strayBreak = [punch(1, "clock_in", 3, "07:00"), punch(2, "clock_out", 3, "15:30"), punch(3, "break_end", 3, "17:02")];
+  const moved = d.moveIn(off(strayBreak), id(3), id(1));
+  assert.equal(d.showsBreaks(moved, new Set([id(1), id(2), id(3)])), true);
+  // Two saved shifts joined (the first's clock-out and the second's clock-in removed): the second had the break.
+  const two = [
+    punch(1, "clock_in", 3, "07:00"),
+    punch(2, "clock_out", 3, "11:00"),
+    punch(3, "clock_in", 3, "11:30"),
+    punch(4, "break_start", 3, "13:00"),
+    punch(5, "break_end", 3, "13:15"),
+    punch(6, "clock_out", 3, "15:30"),
+  ];
+  const joined = d.remove(d.remove(off(two), id(2)), id(3));
+  const [shift] = d.shown(joined);
+  assert.equal(d.showsBreaks(joined, new Set(shift.punches.map((p) => p.id))), true);
 });

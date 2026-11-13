@@ -39,8 +39,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The attention bar's counts, in the mockup's order: automatic clock-outs, then what needs fixing.
 _BREAK_KINDS: Final = frozenset({PunchKind.BREAK_START, PunchKind.BREAK_END})
+# The attention bar's counts, in the mockup's order: automatic clock-outs, then what needs fixing.
 _ATTENTION_ORDER: Final = ("automatic", *(f"extra:{kind}" for kind in PunchKind), "stray", "mixed")
 
 
@@ -300,7 +300,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
                 if e.kind is EntryKind.STRAY or e.shift is None:
                   listed = ", ".join(f"{text.KIND_LABEL[p.kind]} {text.clock_time(p.at, tz, h24=h24)}" for p in e.punches)
                   TextElement(tag="td", text=listed).props(f"colspan={4 if breaks else 3}")
-                  for _ in range(2 if breaks else 1):  # worked and paid
+                  for _ in range(2 if breaks else 1):  # worked (while breaks show) and paid
                     TextElement(tag="td", text="none").classes("num muted")
                 else:
                   shift = e.shift
