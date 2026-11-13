@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # The attention bar's counts, in the mockup's order: automatic clock-outs, then what needs fixing.
+_BREAK_KINDS: Final = frozenset({PunchKind.BREAK_START, PunchKind.BREAK_END})
 _ATTENTION_ORDER: Final = ("automatic", *(f"extra:{kind}" for kind in PunchKind), "stray", "mixed")
 
 
@@ -261,20 +262,30 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
                 ui.element("span").classes("page-icon icon-lock")
                 ui.label("You: another editor changes these")
             total = week_hours(theirs, settings=ctx.settings, tz=tz, week=(start, end), now=at)
+            # Breaks show unless they're off and no shift here has a break punch, ignored ones included (spec
+            # 2026-11-13); without breaks worked equals paid, so Worked goes with them.
+            breaks = ctx.settings.breaks_enabled or any(p.kind in _BREAK_KINDS for e, _, _ in visible for p in e.punches)
             with ui.row().classes("tot"):  # paid hours: worked plus paid breaks, as the weekly hours alert counts them
               ui.label("Week:")
               ui.label(text.hm(total.worked + total.paid_break)).classes("tot-hours").mark(f"week-paid-{person.id}")
-              ui.label("paid ·")
-              ui.label(text.hm(total.worked)).mark(f"week-worked-{person.id}")
-              ui.label("worked")
+              if breaks:
+                ui.label("paid ·")
+                ui.label(text.hm(total.worked)).mark(f"week-worked-{person.id}")
+                ui.label("worked")
+              else:
+                ui.label("paid")
           if technical:
             ui.label(text.employee_details(person, ctx.groups, tz, h24=h24)).classes("empdet")
           with ui.element("table").classes("sh"):
             with ui.element("tr"):
-              for heading in ("Day", "Clock in", "Clock out", "Breaks", "Lunch"):
+              for heading in ("Day", "Clock in", "Clock out"):
                 TextElement(tag="th", text=heading)
-              for heading in ("Worked", "Paid"):
-                TextElement(tag="th", text=heading).classes("num")
+              if breaks:
+                TextElement(tag="th", text="Breaks").mark(f"head-breaks-{person.id}")
+              TextElement(tag="th", text="Lunch")
+              if breaks:
+                TextElement(tag="th", text="Worked").classes("num").mark(f"head-worked-{person.id}")
+              TextElement(tag="th", text="Paid").classes("num")
               if technical:
                 TextElement(tag="th", text="Clock")
                 TextElement(tag="th", text="Punches")
@@ -288,8 +299,8 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
                 TextElement(tag="td", text=text.day_label(e.start.astimezone(tz).date()))
                 if e.kind is EntryKind.STRAY or e.shift is None:
                   listed = ", ".join(f"{text.KIND_LABEL[p.kind]} {text.clock_time(p.at, tz, h24=h24)}" for p in e.punches)
-                  TextElement(tag="td", text=listed).props("colspan=4")
-                  for _ in range(2):  # worked and paid
+                  TextElement(tag="td", text=listed).props(f"colspan={4 if breaks else 3}")
+                  for _ in range(2 if breaks else 1):  # worked and paid
                     TextElement(tag="td", text="none").classes("num muted")
                 else:
                   shift = e.shift
@@ -302,7 +313,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
                   assert hours is not None  # a shift's
                   # Breaks as "<n> · h:mm", then the part of them total_hours didn't pay when it's a minute or more;
                   # lunch as "h:mm", with its count only when there are several.
-                  for spans, bare in ((shift.breaks, False), (shift.lunches, True)):
+                  for spans, bare in ((shift.breaks, False), (shift.lunches, True))[0 if breaks else 1 :]:
                     length = sum(((s.end or at) - s.start for s in spans), timedelta())
                     told = "" if not spans else text.hm(length) if bare and len(spans) == 1 else f"{len(spans)} · {text.hm(length)}"
                     with ui.element("td"):
@@ -310,7 +321,8 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
                       if not bare and (unpaid := length - hours.paid_break) >= timedelta(minutes=1):
                         TextElement(tag="span", text=f"({text.hm(unpaid)} unpaid)").classes("unpaid").mark(f"unpaid-{e.key}")
                   so_far = " so far" if shift.clock_out is None else ""
-                  TextElement(tag="td", text=f"{text.hm(hours.worked)}{so_far}").classes("num")
+                  if breaks:
+                    TextElement(tag="td", text=f"{text.hm(hours.worked)}{so_far}").classes("num")
                   paid = text.hm(hours.worked + hours.paid_break)
                   TextElement(tag="td", text=f"{paid}{so_far}").classes("num paid").mark(f"paid-{e.key}")
                 if technical:
