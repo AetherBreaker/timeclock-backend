@@ -31,7 +31,7 @@ def _print(page: DbPage, employee: int) -> None:
     )
 
 
-async def test_the_employees_tab_lists_everyone_by_last_name(db_page: DbPage) -> None:
+async def test_the_employees_tab_lists_everyone_by_first_name(db_page: DbPage) -> None:
   ann, bob = db_page.db.employees
   cy = db_page.db.employee("Cy", "Adams", "56")
   with db_page.db.admin() as conn:
@@ -39,7 +39,7 @@ async def test_the_employees_tab_lists_everyone_by_last_name(db_page: DbPage) ->
   await db_page.user.open("/")
   db_page.user.find(marker="nav-employees").click()
   await db_page.user.should_see(marker="employee-search")
-  assert _rows(db_page) == [cy, ann, bob]
+  assert _rows(db_page) == [ann, bob, cy]
   await db_page.user.should_see("(555) 555-0142")
   await db_page.user.should_see("bob@example.com")
   await db_page.user.should_see(marker=f"own-{ann}")  # your own row has a lock

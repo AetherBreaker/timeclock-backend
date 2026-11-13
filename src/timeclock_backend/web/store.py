@@ -69,8 +69,8 @@ class Person:
 
   @property
   def sort_key(self) -> tuple[str, str, str, str]:
-    """By last name (spec §7)."""
-    return (self.last_name.casefold(), self.first_name.casefold(), (self.middle_name or "").casefold(), self.username)
+    """By first name, as `name` reads (the owner's call over spec §7's last name), then last name."""
+    return (self.first_name.casefold(), self.last_name.casefold(), (self.middle_name or "").casefold(), self.username)
 
 
 @dataclass(frozen=True, slots=True)

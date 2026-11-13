@@ -48,7 +48,7 @@ def _set(page: DbPage, marker: str, value: object) -> None:
     select.set_value(value)
 
 
-async def test_the_list_opens_on_this_week_sorted_by_last_name_with_week_totals(db_page: DbPage) -> None:
+async def test_the_list_opens_on_this_week_sorted_by_first_name_with_week_totals(db_page: DbPage) -> None:
   bob = db_page.db.employees[1]
   cy = db_page.db.employee("Cy", "Adams", "56")
   _shift(db_page, cy, 2, "07:00", "15:30")
@@ -57,7 +57,7 @@ async def test_the_list_opens_on_this_week_sorted_by_last_name_with_week_totals(
   _shift(db_page, bob, 3, "08:00", "16:00")
   await db_page.user.open("/")
   await db_page.user.should_see("Nov 2 to 8, 2026")
-  assert _cards(db_page) == [f"employee-{cy}", f"employee-{bob}"]
+  assert _cards(db_page) == [f"employee-{bob}", f"employee-{cy}"]
   await db_page.user.should_see("Cy Adams")
   await db_page.user.should_see("ID 56")
   await db_page.user.should_see(marker=f"week-paid-{cy}", content="8:30")
@@ -151,6 +151,45 @@ async def test_filters_combine(db_page: DbPage) -> None:
   _set(db_page, "filter-role", None)
   _set(db_page, "filter-employee", dee)
   await db_page.user.should_not_see("Cy Adams")  # a refresh lands after the event
+  assert _cards(db_page) == [f"employee-{dee}"]
+
+
+async def test_a_group_narrows_the_employee_filter_to_its_people(db_page: DbPage) -> None:
+  warehouse = db_page.db.group("Warehouse")
+  ann, bob = db_page.db.employees
+  dee = db_page.db.employee("Dee", "Moss", "78", group_id=warehouse)
+  cy = db_page.db.employee("Cy", "Adams", "56", group_id=warehouse)
+  _shift(db_page, bob, 3, "08:00", "16:00")
+  await db_page.user.open("/")
+  await db_page.user.should_see("Bob Lee")
+  [select] = db_page.user.find(marker="filter-employee").elements
+  assert isinstance(select, ui.select)
+  assert list(select.options) == [None, ann, bob, cy, dee]  # by first name: Ann, Bob, Cy, Dee
+  _set(db_page, "filter-group", warehouse)
+  assert list(select.options) == [None, cy, dee]
+  _set(db_page, "filter-group", None)
+  assert list(select.options) == [None, ann, bob, cy, dee]
+
+
+async def test_a_group_drops_a_chosen_employee_outside_it(db_page: DbPage) -> None:
+  warehouse = db_page.db.group("Warehouse")
+  bob = db_page.db.employees[1]
+  dee = db_page.db.employee("Dee", "Moss", "78", group_id=warehouse)
+  for employee in (bob, dee):
+    _shift(db_page, employee, 3, "08:00", "16:00")
+  await db_page.user.open("/")
+  await db_page.user.should_see("Dee Moss")
+  _set(db_page, "filter-employee", bob)
+  await db_page.user.should_not_see("Dee Moss")
+  _set(db_page, "filter-group", warehouse)
+  await db_page.user.should_see("Dee Moss")
+  [select] = db_page.user.find(marker="filter-employee").elements
+  assert isinstance(select, ui.select)
+  assert select.value is None
+  assert _cards(db_page) == [f"employee-{dee}"]
+  # The same from the address: an employee outside the group there is dropped, not an empty list.
+  await db_page.user.open(f"/?group={warehouse}&employee={bob}")
+  await db_page.user.should_see(marker=f"employee-{dee}")
   assert _cards(db_page) == [f"employee-{dee}"]
 
 
