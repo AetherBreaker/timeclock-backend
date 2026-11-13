@@ -284,7 +284,7 @@ export default {
   mounted() {
     this.ticker = setInterval(() => (this.now = Date.now()), 30000);
     this.onConnect = () => (this.connected = true);
-    this.onDisconnect = () => (this.connected = false);
+    this.onDisconnect = () => window.pageLeaving || (this.connected = false); // leaving the page isn't an interruption (app.py)
     const attach = () => {
       if (!window.socket) {
         this.attaching = setTimeout(attach, 200);

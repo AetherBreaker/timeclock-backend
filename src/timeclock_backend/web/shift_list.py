@@ -106,14 +106,18 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
     await rows.refresh()  # awaited: an unawaited one runs later, so the first read's would redraw the first drawing
 
   def fit_filters(ctx: Context) -> None:
-    """Give the Employee and Group filters `ctx`'s options, Employee only the chosen group's people.
+    """Give the Employee and Group filters `ctx`'s options, Employee only the people of the chosen group and role.
 
-    A group or employee in the address that's gone since, or an employee outside the group, is dropped: the list shows
-    the rest rather than nothing. A dropped employee's select fires `choose`, which writes the address.
+    A group or employee in the address that's gone since, or an employee outside the group or role, is dropped: the
+    list shows the rest rather than nothing. A dropped employee's select fires `choose`, which writes the address.
     """
     nonlocal employee, group
     group = group if group in ctx.groups else None
-    people = [p for p in sorted(ctx.people.values(), key=lambda p: p.sort_key) if group is None or p.group_id == group]
+    people = [
+      p
+      for p in sorted(ctx.people.values(), key=lambda p: p.sort_key)
+      if (group is None or p.group_id == group) and (role is None or p.role == role)
+    ]
     employee = employee if any(p.id == employee for p in people) else None
     options: list[tuple[ui.select, dict[Any, str], int | None]] = [
       (employee_select, {None: "All employees", **{p.id: f"{p.name} · ID {p.username}" for p in people}}, employee),
@@ -139,10 +143,10 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
         employee = e.value
       case "group":
         group = e.value
-        if data is not None:
-          fit_filters(data[0])
       case _:
         role = e.value
+    if name != "employee" and data is not None:
+      fit_filters(data[0])
     ui.navigate.history.replace(address())
     rows.refresh()
 

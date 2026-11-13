@@ -66,13 +66,20 @@ _ACTIVITY_SCRIPT: Final = """<script>
   // A list's "Saved: ..." note, from the editor it came back from, lasts until the next click.
   const seen = () => document.querySelectorAll(".saved-note").forEach((e) => (e.style.display = "none"));
   addEventListener("pointerdown", seen, { capture: true, once: true });
+  // Leaving a page closes its socket, in Firefox at once while the page still shows (a save going back to the list, a
+  // link): no interruption, so `pageLeaving` (the editor reads it too) hides that disconnect. Ten seconds on it's off
+  // again, for a leaving that was called off.
+  addEventListener("beforeunload", () => {
+    window.pageLeaving = true;
+    setTimeout(() => (window.pageLeaving = false), 10000);
+  });
   const watch = () => {
     if (!window.socket) return setTimeout(watch, 200);
     const offline = (down) => {
       document.body.classList.toggle("page-offline", down);
       document.querySelectorAll(".offline-inert").forEach((e) => (e.inert = down));
     };
-    window.socket.on("disconnect", () => offline(true));
+    window.socket.on("disconnect", () => window.pageLeaving || offline(true));
     window.socket.on("connect", () => offline(false));
   };
   watch();

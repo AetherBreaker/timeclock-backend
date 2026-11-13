@@ -193,6 +193,33 @@ async def test_a_group_drops_a_chosen_employee_outside_it(db_page: DbPage) -> No
   assert _cards(db_page) == [f"employee-{dee}"]
 
 
+async def test_a_role_narrows_the_employee_filter_with_the_group(db_page: DbPage) -> None:
+  warehouse = db_page.db.group("Warehouse")
+  cy = db_page.db.employee("Cy", "Adams", "56", group_id=warehouse, role="manager")
+  dee = db_page.db.employee("Dee", "Moss", "78", group_id=warehouse)
+  eve = db_page.db.employee("Eve", "Hart", "90", role="manager")
+  for employee in (cy, dee, eve):
+    _shift(db_page, employee, 3, "08:00", "16:00")
+  await db_page.user.open("/")
+  await db_page.user.should_see("Dee Moss")
+  [select] = db_page.user.find(marker="filter-employee").elements
+  assert isinstance(select, ui.select)
+  _set(db_page, "filter-employee", dee)
+  await db_page.user.should_not_see("Cy Adams")
+  _set(db_page, "filter-role", "manager")  # Dee isn't one: dropped
+  await db_page.user.should_see("Cy Adams")
+  assert select.value is None
+  assert list(select.options) == [None, cy, eve]
+  assert _cards(db_page) == [f"employee-{cy}", f"employee-{eve}"]
+  _set(db_page, "filter-group", warehouse)
+  assert list(select.options) == [None, cy]
+  _set(db_page, "filter-role", None)
+  assert list(select.options) == [None, cy, dee]
+  await db_page.user.open(f"/?role=manager&employee={dee}")
+  await db_page.user.should_see(marker=f"employee-{eve}")
+  assert _cards(db_page) == [f"employee-{cy}", f"employee-{eve}"]
+
+
 async def test_your_own_shifts_are_locked(db_page: DbPage) -> None:
   ann = db_page.db.employees[0]
   _shift(db_page, ann, 2, "09:00", "17:30")
