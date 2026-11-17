@@ -411,3 +411,29 @@ async def test_a_chosen_attention_count_stays_at_zero_to_turn_its_filter_off(db_
   db_page.user.find(marker="attention-breaks").click()
   await db_page.user.should_see(marker=f"row-{monday}")
   await db_page.user.should_not_see(marker="attention-breaks")
+
+
+async def test_clear_filters_drops_every_filter_but_the_week(db_page: DbPage) -> None:
+  warehouse = db_page.db.group("Warehouse")
+  bob = db_page.db.employees[1]
+  dee = db_page.db.employee("Dee", "Moss", "78", group_id=warehouse, role="manager")
+  rows = [_shift(db_page, employee, 27, "08:00", "16:00", month=10) for employee in (bob, dee)]
+  await db_page.user.open("/?week=2026-10-26")
+  await db_page.user.should_see(marker=f"row-{rows[0]}")
+  [button] = db_page.user.find(marker="clear-filters").elements
+  assert isinstance(button, ui.button)
+  assert not button.enabled  # nothing to clear
+  # An attention key the page doesn't know (an old bookmark) filters to nothing, with no count to click off.
+  await db_page.user.open(f"/?week=2026-10-26&employee={dee}&group={warehouse}&role=manager&attention=bogus")
+  await db_page.user.should_see("No shifts need attention this week.")
+  [button] = db_page.user.find(marker="clear-filters").elements
+  assert isinstance(button, ui.button)
+  assert button.enabled
+  db_page.user.find(marker="clear-filters").click()
+  await db_page.user.should_see(marker=f"row-{rows[0]}")
+  await db_page.user.should_see(marker=f"row-{rows[1]}")
+  for marker in ("filter-employee", "filter-group", "filter-role"):
+    [select] = db_page.user.find(marker=marker).elements
+    assert isinstance(select, ui.select)
+    assert select.value is None
+  assert not button.enabled

@@ -157,6 +157,15 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
     ui.navigate.history.replace(address())
     rows.refresh()
 
+  def clear() -> None:
+    """Drop every filter but the week."""
+    nonlocal attention
+    attention = None
+    for select in (role_select, group_select, employee_select):  # one that changes fires `choose`
+      select.set_value(None)
+    ui.navigate.history.replace(address())
+    rows.refresh()
+
   with ui.column().classes("page-body shift-list"):
     if (saved := storage.pop("saved", None)) is not None:  # what an editor saved before coming back; gone on a click (app.py)
       with ui.row().classes("callout green saved-note").mark("saved-note"):
@@ -207,12 +216,19 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
         .mark("filter-group")
       )
       roles = {None: "All roles", **{r.value: r.value.capitalize() for r in EmployeeRole}}
-      ui.select(roles, value=role, label="Role", on_change=lambda e: choose("role", e)).props("outlined dense options-dense").classes(
-        "filter"
-      ).mark("filter-role")
+      role_select = (
+        ui.select(roles, value=role, label="Role", on_change=lambda e: choose("role", e))
+        .props("outlined dense options-dense")
+        .classes("filter")
+        .mark("filter-role")
+      )
+      with ui.button(on_click=clear).props("flat no-caps").classes("link-button").mark("clear-filters") as clear_button:
+        ui.element("span").classes("page-icon icon-close")
+        ui.label("Clear filters")
 
     @ui.refreshable
     def rows() -> None:  # noqa: C901, PLR0912, PLR0915 - the list's one drawing pass
+      clear_button.set_enabled(any(v is not None for v in (employee, group, role, attention)))
       if down or data is None:
         with ui.row().classes("callout orange"):
           ui.element("span").classes("page-icon icon-warning")

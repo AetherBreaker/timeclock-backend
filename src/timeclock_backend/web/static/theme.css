@@ -231,6 +231,10 @@ body.test-database {
   content: "add";
 }
 
+.icon-close::before {
+  content: "close";
+}
+
 .icon-lock::before {
   content: "lock";
   font-size: 15px;
@@ -483,6 +487,11 @@ body.test-database {
 
 .link-button {
   color: var(--link);
+}
+
+/* Greyed out: Quasar's own fade barely shows on the dark theme, and its layered !important outranks this sheet's. */
+.link-button.disabled .q-btn__content {
+  color: var(--muted);
 }
 
 /* The shift list (mockup B, I) */
