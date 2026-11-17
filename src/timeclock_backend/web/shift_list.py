@@ -253,9 +253,10 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
           ui.element("span").classes("page-icon icon-warning")
           with ui.row().classes("attention-counts"):
             ui.label(text.attention_headline(needing) if needing else "Nothing needs attention this week.").classes("attention-lead")
-            for k in sorted(counts, key=_ATTENTION_ORDER.index):
+            # The chosen count stays at 0 once its shifts are fixed: clicking it is how its filter turns off.
+            for k in sorted(counts.keys() | (set(_ATTENTION_ORDER) & {attention}), key=_ATTENTION_ORDER.index):
               color = "orange" if k in _REVIEW.values() else "red"
-              ui.button(text.attention_label(k, counts[k]), on_click=partial(focus, None if attention == k else k)).props(
+              ui.button(text.attention_label(k, counts.get(k, 0)), on_click=partial(focus, None if attention == k else k)).props(
                 "flat dense no-caps"
               ).classes(f"chip {color}{' on' * (attention == k)}").mark(f"attention-{k}")
           ui.switch(

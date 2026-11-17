@@ -395,3 +395,19 @@ async def test_breaks_within_the_setting_need_nothing(db_page: DbPage) -> None:
     await db_page.user.should_see(marker=f"row-{first}")
     await db_page.user.should_not_see("3 breaks")
     await db_page.user.should_not_see(marker="attention-breaks")
+
+
+async def test_a_chosen_attention_count_stays_at_zero_to_turn_its_filter_off(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  _, starts = _three_breaks(db_page, bob)
+  monday = _shift(db_page, bob, 2, "08:00", "16:00")
+  await db_page.user.open("/")
+  db_page.user.find(marker="attention-breaks").click()
+  await db_page.user.should_not_see(marker=f"row-{monday}")
+  db_page.db.correct(starts[2], "amend", new_at=_ny(3, "14:00"))  # the last one reviewed while the list is filtered to it
+  await db_page.user.should_see(marker="attention-breaks", content="0 shifts with too many breaks", retries=50)
+  [chip] = db_page.user.find(marker="attention-breaks").elements
+  assert "on" in chip.classes
+  db_page.user.find(marker="attention-breaks").click()
+  await db_page.user.should_see(marker=f"row-{monday}")
+  await db_page.user.should_not_see(marker="attention-breaks")
