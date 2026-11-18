@@ -8,9 +8,11 @@ from datetime import date
 from typing import TYPE_CHECKING, Any
 
 # Third party imports
+import psycopg
 import pytest
 
 # First party imports
+from timeclock_backend import databases
 from timeclock_backend.bootstrap import bootstrap
 from timeclock_backend.databases import Database, connect
 from timeclock_backend.jobs import payroll_report, report_sends
@@ -169,6 +171,48 @@ async def test_the_listener_sends_on_a_ping(migrated: Database, sent: list[Email
     with pytest.raises(asyncio.CancelledError):
       await listening
   assert len(sent) == 1
+
+
+async def test_a_connection_lost_mid_send_still_alerts(migrated: Database, alerts: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+  # The claim's connection dies during the send (Postgres restarting), so recording the failure fails too.
+  def drop_connections_then_fail(msg: object) -> None:
+    with psycopg.connect(databases.SERVER_CONNINFO, dbname=migrated.name, autocommit=True) as admin:
+      admin.execute(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s AND pid <> pg_backend_pid()", (migrated.name,)
+      )
+    raise OSError("smtp down")
+
+  monkeypatch.setattr(payroll_report, "batch_send_emails", drop_connections_then_fail)
+  await request(migrated, "a@example.com")
+  with pytest.raises(psycopg.OperationalError):
+    await process_pending(migrated)
+  assert len(alerts) == 1
+
+
+async def test_the_listener_fails_rows_left_sending_when_it_connects(migrated: Database, alerts: list[str]) -> None:
+  # The listener is its database's only claimer: a row already `sending` when it (re)connects is one a lost connection
+  # or a restart stranded.
+  request_id = await request(migrated, "a@example.com")
+  await change(migrated, "UPDATE backend.report_sends SET status = 'sending' WHERE id = %s", request_id)
+  listening = asyncio.create_task(listen_for_report_sends(migrated))
+  try:
+    async with asyncio.timeout(10):
+      while (await outcome(migrated, request_id))["status"] != "failed":  # noqa: ASYNC110 - the row is the only signal
+        await asyncio.sleep(0.05)
+  finally:
+    listening.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await listening
+  assert (await outcome(migrated, request_id))["error"] == INTERRUPTED
+
+
+async def test_fail_interrupted_alerts_only_when_it_fails_rows(migrated: Database, alerts: list[str]) -> None:
+  assert await fail_interrupted(migrated) == 0
+  assert alerts == []
+  request_id = await request(migrated, "a@example.com")
+  await change(migrated, "UPDATE backend.report_sends SET status = 'sending' WHERE id = %s", request_id)
+  assert await fail_interrupted(migrated) == 1
+  assert len(alerts) == 1
 
 
 async def test_a_test_database_request_is_marked_test(migrated: Database, sent: list[EmailMessage], alerts: list[str]) -> None:

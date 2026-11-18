@@ -23,7 +23,7 @@ from timeclock_backend.schedule import STATIC
 from timeclock_backend.settings import SETTINGS
 
 LOGGER: Final = logging.getLogger(__name__)
-INTERRUPTED: Final = "interrupted by a backend restart; send again"
+INTERRUPTED: Final = "interrupted mid-send; send again"
 _MAX_BACKOFF: Final = 60.0
 # SKIP LOCKED: two passes (a ping burst) never claim one row.
 _CLAIM: Final = """
@@ -34,12 +34,20 @@ _CLAIM: Final = """
 
 
 async def fail_interrupted(db: Database) -> int:
-  """Fail the rows a previous run left mid-send, and return how many; never resent, since the email may have gone."""
+  """Fail the rows left mid-send, alert, and return how many; never resent, since the email may have gone.
+
+  Only before a pass: the listener is its database's one claimer, so a `sending` row then is one a lost connection or a
+  restart stranded.
+  """
   async with await connect(db.name, autocommit=True) as conn:
     cursor = await conn.execute(
-      "UPDATE backend.report_sends SET status = 'failed', error = %s, finished_at = now() WHERE status = 'sending'", (INTERRUPTED,)
+      "UPDATE backend.report_sends SET status = 'failed', error = %s, finished_at = now() WHERE status = 'sending' RETURNING id",
+      (INTERRUPTED,),
     )
-  return cursor.rowcount
+    stranded = [row["id"] for row in await cursor.fetchall()]
+  if stranded:  # the requesters may have closed their dialogs
+    alert(f"Manual report send(s) interrupted in {db.name}", f"Requests {stranded} were marked failed: {INTERRUPTED}.", wait=False)
+  return len(stranded)
 
 
 async def process_pending(db: Database) -> int:
@@ -82,13 +90,14 @@ async def process_pending(db: Database) -> int:
         )
       except Exception as exc:
         LOGGER.exception("manual report send %d in %s failed", row["id"], db.name)
+        # Before the row's update, which fails too when the connection is what died. wait=False: the default joins the
+        # senders, blocking the loop. Alerted: the requester may have closed the dialog.
+        details = f"Request {row['id']} in {db.name} by {row['requested_by']}:\n\n{''.join(traceback.format_exception(exc))}"
+        alert(f"Manual report send {row['id']} failed", details, wait=False, exc=exc)
         await conn.execute(
           "UPDATE backend.report_sends SET status = 'failed', error = %s, finished_at = now() WHERE id = %s",
           (str(exc) or type(exc).__name__, row["id"]),
         )
-        # wait=False: the default joins the senders, blocking the loop. Alerted: the requester may have closed the dialog.
-        details = f"Request {row['id']} in {db.name} by {row['requested_by']}:\n\n{''.join(traceback.format_exception(exc))}"
-        alert(f"Manual report send {row['id']} failed", details, wait=False, exc=exc)
       else:
         await conn.execute("UPDATE backend.report_sends SET status = 'sent', finished_at = now() WHERE id = %s", (row["id"],))
 
@@ -100,6 +109,7 @@ async def listen_for_report_sends(db: Database) -> None:
     try:
       async with await connect(db.name, autocommit=True) as conn:
         await conn.execute("LISTEN report_sends")
+        await fail_interrupted(db)
         await process_pending(db)
         backoff = 1.0
         async for _ in conn.notifies():  # a ping only says "look": the rows say what to send

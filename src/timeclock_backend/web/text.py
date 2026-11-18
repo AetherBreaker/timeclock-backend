@@ -161,6 +161,8 @@ REPORT_WAITING = "Waiting for the backend…"
 NO_REPORT_RECIPIENTS = "No addresses are enrolled for the payroll report."
 SELECT_ALL = "Select all"
 SELECT_NONE = "Select none"
+CANCEL = "Cancel"
+CLOSE = "Close"
 
 
 def send_to(count: int) -> str:

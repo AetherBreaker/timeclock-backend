@@ -96,6 +96,33 @@ async def test_sending_requests_the_shown_week(db_page: DbPage) -> None:
   assert not one(db_page, "send", ui.button).enabled  # until the outcome arrives
 
 
+async def test_a_double_click_on_send_makes_one_request(db_page: DbPage) -> None:
+  await open_dialog(db_page)
+  db_page.user.find(marker=f"recipient-{SEEDED}").click()
+  db_page.user.find(marker="send").click()
+  db_page.user.find(marker="send").click()  # before the first click's handler has run
+  await db_page.user.should_see(text.REPORT_WAITING)
+  assert len(requests(db_page)) == 1
+
+
+async def test_a_double_click_on_the_button_opens_one_dialog(db_page: DbPage) -> None:
+  make_developer(db_page)
+  await db_page.user.open("/")
+  db_page.user.find(marker="send-report").click()
+  db_page.user.find(marker="send-report").click()
+  await db_page.user.should_see(marker="report-send")
+  assert len(db_page.user.find(marker="report-send").elements) == 1
+
+
+async def test_cancel_reads_close_once_the_request_is_in(db_page: DbPage) -> None:
+  await open_dialog(db_page)
+  assert one(db_page, "close", ui.button).text == "Cancel"
+  db_page.user.find(marker=f"recipient-{SEEDED}").click()
+  db_page.user.find(marker="send").click()
+  await db_page.user.should_see(text.REPORT_WAITING)
+  assert one(db_page, "close", ui.button).text == "Close"  # closing abandons the display, never the send
+
+
 async def test_the_current_week_sends_its_monday(db_page: DbPage) -> None:
   await open_dialog(db_page)  # the list opens on this week (the clock: Thu Nov 5), its `week` unset
   db_page.user.find(marker=f"recipient-{SEEDED}").click()

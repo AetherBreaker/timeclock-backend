@@ -83,7 +83,11 @@ async def open_report_send(  # noqa: C901, PLR0915 - one dialog: its read, its d
 
   async def submit() -> None:
     nonlocal request_id, waiting
-    waiting = True  # before the insert: a second click while it runs mustn't make a second request
+    # Checked and set with no await between: NiceGUI runs each click as its own task, so a double click's second task
+    # can start before the first has disabled the button.
+    if waiting:
+      return
+    waiting = True
     refresh()
     chosen = [email for email, box in boxes.items() if box.value]
     try:
@@ -105,6 +109,7 @@ async def open_report_send(  # noqa: C901, PLR0915 - one dialog: its read, its d
     assert row is not None
     request_id = row["id"]
     outcome.set_text(text.REPORT_WAITING)
+    close.set_text(text.CLOSE)  # from here closing abandons the display, never the send
     poll.activate()
 
   async def check() -> None:
@@ -145,7 +150,7 @@ async def open_report_send(  # noqa: C901, PLR0915 - one dialog: its read, its d
     outcome = ui.label("" if problem is None else text.report_failed(problem)).classes("small").mark("outcome")
     poll = ui.timer(POLL_SECS, check, active=False)  # dies with the dialog: closing it abandons the display, never the send
     with ui.row().classes("saverow"):
-      ui.button("Cancel", on_click=dialog.close).props("outline no-caps").classes("btn outline")
+      close = ui.button(text.CANCEL, on_click=dialog.close).props("outline no-caps").classes("btn outline").mark("close")
       send = ui.button(text.send_to(0), on_click=submit).props("unelevated no-caps color=primary text-color=black").mark("send")
       send.set_enabled(False)
       send.set_visibility(bool(emails))

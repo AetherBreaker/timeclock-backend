@@ -15,7 +15,7 @@ from aeth_ext.monitoring import run_heartbeat_async
 from timeclock_backend.bootstrap import bootstrap
 from timeclock_backend.databases import DATABASES
 from timeclock_backend.jobs.auto_clock_out import AutoClockOutJob, listen_for_settings
-from timeclock_backend.jobs.report_sends import fail_interrupted, listen_for_report_sends
+from timeclock_backend.jobs.report_sends import listen_for_report_sends
 from timeclock_backend.relay import start_relay
 from timeclock_backend.schedule import DYNAMIC, STATIC
 from timeclock_backend.scheduling import PgRunStore, Runner
@@ -54,9 +54,6 @@ async def main() -> None:
   # A failure raises out of `main()`: aeth_ext's crash hook alerts and shuts down fatally, and
   # Docker restarts the container while the clocks keep buffering.
   await bootstrap()
-  # Before any listener can claim a row: a `sending` row now is one a previous run died in.
-  for db in DATABASES:
-    await fail_interrupted(db)
 
   relay = await start_relay(
     port=SETTINGS.relay_port,

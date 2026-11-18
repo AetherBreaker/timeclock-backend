@@ -91,8 +91,7 @@ startup.DYNAMIC = (Entry("slow", At(datetime.now(UTC)), Slow()),) if SLOW else (
 async def nothing(db):
   pass
 
-# Likewise the report send sweep and listeners: no database is there.
-startup.fail_interrupted = nothing
+# Likewise the report send listeners: no database is there.
 startup.listen_for_report_sends = nothing
 real_start_relay = startup.start_relay
 
