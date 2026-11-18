@@ -24,6 +24,7 @@ from . import text
 from .db import DatabaseChangedError, editor_transaction
 from .gate import SignedOutError
 from .rules import (
+  REVIEWED,
   DraftPunch,
   EntryKind,
   RefusalKind,
@@ -31,6 +32,7 @@ from .rules import (
   conflicts,
   entries,
   entry_hours,
+  flagged_breaks,
   flags,
   over_breaks,
   overlapping,
@@ -151,6 +153,9 @@ def base_json(
     "tz": ctx.tz.key,
     "paidBreakMinutes": ctx.settings.paid_break_minutes,
     "breakLimitMinutes": ctx.settings.break_limit_minutes,
+    "breakGraceMinutes": ctx.settings.break_grace_minutes,
+    "lunchExpectedMinutes": ctx.settings.lunch_expected_minutes,
+    "lunchGraceMinutes": ctx.settings.lunch_grace_minutes,
     "maxBreaksPerDay": ctx.settings.max_breaks_per_day,
     "breaksEnabled": ctx.settings.breaks_enabled,
     "now": ms(now),
@@ -447,8 +452,10 @@ async def draw_shift_editor(  # noqa: C901, PLR0912, PLR0915 - one page in two m
         def chips(shown: Entry, theirs: Sequence[PagePunch]) -> None:
           over = over_breaks(entries(theirs, as_of=now()), limit=ctx.settings.max_breaks_per_day, tz=tz)
           day_breaks = max((over[p.id] for p in shown.punches if p.id in over), default=0)
-          for flag in flags(shown, over=over):
-            label = text.flag_label(flag, problem(shown), len(shown.ignored), breaks=day_breaks)
+          flagged = flagged_breaks(shown, settings=ctx.settings)
+          for flag in flags(shown, over=over, flagged=flagged):
+            times = sum(flag in {f.flag, REVIEWED[f.flag]} for f in flagged)
+            label = text.flag_label(flag, problem(shown), len(shown.ignored), breaks=day_breaks, times=times)
             ui.label(label).classes(f"chip {text.CHIP[flag]}")
 
         chips(entry, punches)

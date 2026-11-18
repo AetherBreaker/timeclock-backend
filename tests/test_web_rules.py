@@ -25,6 +25,7 @@ from timeclock_backend.web.rules import (
   conflicts,
   entries,
   entry_hours,
+  flagged_breaks,
   flags,
   over_breaks,
   overlapping,
@@ -85,7 +86,7 @@ def test_a_double_clock_in_is_one_shift_holding_the_extra() -> None:
   assert entry.kind is EntryKind.SHIFT
   assert [p.id for p in entry.punches] == [p.id for p in punches]
   assert entry.ignored == {extra.id}
-  assert flags(entry, over={}) == (Flag.NEEDS_FIXING,)
+  assert flags(entry, over={}, flagged=()) == (Flag.NEEDS_FIXING,)
   assert problem(entry) == "extra:clock_in"
 
 
@@ -99,7 +100,7 @@ def test_strays_in_a_row_share_one_entry() -> None:
   assert [p.id for p in found[1].punches] == [p.id for p in strays]
   assert found[1].ignored == {p.id for p in strays}
   assert [p.id for p in found[3].punches] == [last_stray.id]
-  assert flags(found[1], over={}) == (Flag.NEEDS_FIXING,)
+  assert flags(found[1], over={}, flagged=()) == (Flag.NEEDS_FIXING,)
   assert problem(found[1]) == "stray"
 
 
@@ -108,7 +109,7 @@ def test_an_anomaly_inside_an_open_shift_stays_in_it() -> None:
   [entry] = entries([first, extra], as_of=LATER)
   assert entry.end is None
   assert entry.ignored == {extra.id}
-  assert flags(entry, over={}) == (Flag.NEEDS_FIXING, Flag.WORKING)
+  assert flags(entry, over={}, flagged=()) == (Flag.NEEDS_FIXING, Flag.WORKING)
 
 
 def test_an_overnight_shift_is_one_entry_under_its_clock_in() -> None:
@@ -123,17 +124,17 @@ def test_a_punch_after_as_of_is_left_out() -> None:
   start, end = _p(IN, "7:00"), _p(OUT, "23:00")
   [entry] = entries([start, end], as_of=_at("15:00"))
   assert [p.id for p in entry.punches] == [start.id]
-  assert flags(entry, over={}) == (Flag.WORKING,)
+  assert flags(entry, over={}, flagged=()) == (Flag.WORKING,)
 
 
 def test_flags_name_an_unreviewed_automatic_clock_out_and_a_fixed_one() -> None:
   start = _p(IN, "7:58")
   automatic = _p(OUT, "23:00", automatic=True, db_login="postgres")
   [entry] = entries([start, automatic], as_of=LATER)
-  assert flags(entry, over={}) == (Flag.AUTOMATIC,)
+  assert flags(entry, over={}, flagged=()) == (Flag.AUTOMATIC,)
   fixed = replace(automatic, at=_at("17:05"), version=uuid4())
   [entry] = entries([start, fixed], as_of=LATER)
-  assert flags(entry, over={}) == (Flag.AUTOMATIC_FIXED,)
+  assert flags(entry, over={}, flagged=()) == (Flag.AUTOMATIC_FIXED,)
 
 
 def test_a_hand_change_flags_the_shift_changed() -> None:
@@ -144,10 +145,10 @@ def test_a_hand_change_flags_the_shift_changed() -> None:
     _p(IN, "7:00", db_login="postgres"),
   ):
     [entry] = entries([start, out], as_of=LATER)
-    assert flags(entry, over={}) == (Flag.CHANGED,), start
+    assert flags(entry, over={}, flagged=()) == (Flag.CHANGED,), start
   automatic = _p(OUT, "23:00", automatic=True, db_login="postgres", version=uuid4())
   [entry] = entries([_p(IN, "7:00"), automatic], as_of=LATER)
-  assert Flag.CHANGED not in flags(entry, over={})
+  assert Flag.CHANGED not in flags(entry, over={}, flagged=())
 
 
 def test_entry_hours_charge_the_days_break_allowance_across_shifts() -> None:
@@ -331,8 +332,8 @@ def test_flags_name_too_many_breaks_and_reviewed_ones() -> None:
     *(third, _p(BREAK_END, "14:10"), _p(OUT, "16:00")),
   ]
   [entry] = entries(punches, as_of=LATER)
-  assert flags(entry, over=over_breaks([entry], limit=2, tz=TZ)) == (Flag.BREAKS,)
-  assert flags(entry, over={}) == ()
+  assert flags(entry, over=over_breaks([entry], limit=2, tz=TZ), flagged=()) == (Flag.BREAKS,)
+  assert flags(entry, over={}, flagged=()) == ()
   # Marked as correct (an amend to the same values), moved by hand, or added on the page: reviewed, and not Changed too.
   for reviewed in (
     replace(third, version=uuid4()),
@@ -340,4 +341,71 @@ def test_flags_name_too_many_breaks_and_reviewed_ones() -> None:
     replace(third, added_on_page=True),
   ):
     [entry] = entries([reviewed if p is third else p for p in punches], as_of=LATER)
-    assert flags(entry, over=over_breaks([entry], limit=2, tz=TZ)) == (Flag.BREAKS_REVIEWED,), reviewed
+    assert flags(entry, over=over_breaks([entry], limit=2, tz=TZ), flagged=()) == (Flag.BREAKS_REVIEWED,), reviewed
+
+
+DEFAULTS = Settings()  # break limit 15 + grace 15; lunch expected 30 + grace 15
+LUNCH_START, LUNCH_END = PunchKind.LUNCH_START, PunchKind.LUNCH_END
+
+
+def _flagged(punches: list[PagePunch], settings: Settings = DEFAULTS, as_of: datetime = LATER) -> list[Flag]:
+  """The flags of the one entry `punches` make."""
+  [entry] = entries(punches, as_of=as_of)
+  return [f.flag for f in flagged_breaks(entry, settings=settings)]
+
+
+def test_a_break_reaching_the_limit_and_grace_is_long() -> None:
+  punches = [_p(IN, "7:00"), _p(BREAK_START, "9:00"), _p(BREAK_END, "9:30"), _p(OUT, "15:00")]
+  assert _flagged(punches) == [Flag.LONG_BREAK]
+  [entry] = entries(punches, as_of=LATER)
+  assert flags(entry, over={}, flagged=flagged_breaks(entry, settings=DEFAULTS)) == (Flag.LONG_BREAK,)
+  short = replace(punches[2], at=_at("9:29") + timedelta(seconds=59))
+  assert _flagged([punches[0], punches[1], short, punches[3]]) == []
+
+
+def test_with_no_break_limit_the_grace_alone_is_the_threshold() -> None:
+  punches = [_p(IN, "7:00"), _p(BREAK_START, "9:00"), _p(BREAK_END, "9:15"), _p(OUT, "15:00")]
+  assert _flagged(punches, Settings(break_limit_minutes=0)) == [Flag.LONG_BREAK]
+  assert _flagged(punches) == []
+
+
+def test_a_break_ended_at_the_clock_out_is_left_on_break_or_not_ended() -> None:
+  out = _p(OUT, "15:00")
+  # The clock writes the break's end 1 µs before a clock-out made on a break.
+  paired = replace(_p(BREAK_END, "15:00"), at=out.at - timedelta(microseconds=1))
+  assert _flagged([_p(IN, "7:00"), _p(BREAK_START, "14:50"), paired, out]) == [Flag.LEFT_ON_BREAK]
+  assert _flagged([_p(IN, "7:00"), _p(BREAK_START, "14:50"), out]) == [Flag.LEFT_ON_BREAK]  # ended by the clock-out
+  assert _flagged([_p(IN, "7:00"), _p(BREAK_START, "12:00"), out]) == [Flag.BREAK_NOT_ENDED]
+  ended = replace(_p(BREAK_END, "14:59"), at=_at("14:59") + timedelta(seconds=59))
+  assert _flagged([_p(IN, "7:00"), _p(BREAK_START, "14:50"), ended, out]) == []  # a second short: ended by hand
+
+
+def test_a_break_ended_at_an_automatic_clock_out_is_not_ended() -> None:
+  automatic = _p(OUT, "23:00", automatic=True, db_login="postgres")
+  punches = [_p(IN, "15:00"), _p(BREAK_START, "22:55"), automatic]
+  assert _flagged(punches) == [Flag.BREAK_NOT_ENDED]
+  [entry] = entries(punches, as_of=LATER)
+  assert flags(entry, over={}, flagged=flagged_breaks(entry, settings=DEFAULTS)) == (Flag.AUTOMATIC, Flag.BREAK_NOT_ENDED)
+
+
+def test_lunches_are_long_or_not_ended_but_never_left_on() -> None:
+  start, out = _p(IN, "7:00"), _p(OUT, "17:00")
+  assert _flagged([start, _p(LUNCH_START, "12:00"), _p(LUNCH_END, "12:45"), out]) == [Flag.LONG_LUNCH]
+  assert _flagged([start, _p(LUNCH_START, "12:00"), _p(LUNCH_END, "12:44"), out]) == []
+  assert _flagged([start, _p(LUNCH_START, "12:00"), out]) == [Flag.LUNCH_NOT_ENDED]
+  assert _flagged([start, _p(LUNCH_START, "16:50"), out]) == []
+
+
+def test_an_open_break_is_not_flagged() -> None:
+  assert _flagged([_p(IN, "7:00"), _p(BREAK_START, "9:00")], as_of=_at("15:00")) == []
+
+
+def test_a_flagged_break_marked_or_corrected_is_reviewed_and_not_changed() -> None:
+  start, end = _p(BREAK_START, "9:00"), _p(BREAK_END, "9:30")
+  for marked in (
+    [replace(start, version=uuid4()), end],
+    [start, replace(end, version=uuid4())],
+    [replace(start, added_on_page=True), end],
+  ):
+    [entry] = entries([_p(IN, "7:00"), *marked, _p(OUT, "15:00")], as_of=LATER)
+    assert flags(entry, over={}, flagged=flagged_breaks(entry, settings=DEFAULTS)) == (Flag.LONG_BREAK_REVIEWED,), marked

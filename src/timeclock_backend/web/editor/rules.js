@@ -113,15 +113,56 @@ export function overBreaks(found, limit, tz) {
   return over;
 }
 
-// rules.py's flags; `over` is overBreaks over the employee's entries.
-export function flags(entry, over) {
+// rules.py's REVIEWED: flaggedBreaks' flags in chip order; each one's reviewed form adds "_reviewed".
+export const FLAGGED = ["long_break", "left_on_break", "break_not_ended", "long_lunch", "lunch_not_ended"];
+
+// rules.py's flagged_breaks: the entry's ended breaks and lunches that need a second look, as [{flag, start, end}] (end
+// is the end punch or the clock-out). `settings` holds the page context's breakLimitMinutes, breakGraceMinutes,
+// lunchExpectedMinutes and lunchGraceMinutes. Times are already whole milliseconds, as Python cuts them.
+export function flaggedBreaks(entry, settings) {
+  const out = entry.clockOut;
+  const found = [];
+  let start = null;
+  for (const p of entry.punches) {
+    if (entry.ignored.has(p.id)) continue;
+    if (p.kind === "break_start" || p.kind === "lunch_start") {
+      start = p;
+      continue;
+    }
+    if (start === null) continue;
+    const lunch = start.kind === "lunch_start";
+    const minutes = lunch
+      ? settings.lunchExpectedMinutes + settings.lunchGraceMinutes
+      : settings.breakLimitMinutes + settings.breakGraceMinutes;
+    const long = p.at - start.at >= minutes * 60000;
+    const atOut = out !== null && out.at - p.at <= 1;
+    let flag = null;
+    if (atOut && (long || out.automatic)) flag = lunch ? "lunch_not_ended" : "break_not_ended";
+    else if (atOut) flag = lunch ? null : "left_on_break";
+    else if (long) flag = lunch ? "long_lunch" : "long_break";
+    if (flag !== null) found.push({ flag, start, end: p });
+    start = null;
+  }
+  return found;
+}
+
+// rules.py's FlaggedBreak.reviewed.
+export const reviewed = (f) => byHand(f.start) || byHand(f.end);
+
+// rules.py's flags; `over` is overBreaks over the employee's entries, `flagged` the entry's flaggedBreaks.
+export function flags(entry, over, flagged) {
   const found = [];
   if (entry.kind === "stray" || entry.ignored.size > 0) found.push("needs_fixing");
   const automatic = entry.clockOut !== null && entry.clockOut.automatic ? entry.clockOut : null;
   if (automatic !== null) found.push(automatic.version === null ? "automatic" : "automatic_fixed");
   const extra = entry.punches.filter((p) => over.has(p.id));
   if (extra.length > 0) found.push(extra.every((p) => byHand(p)) ? "breaks_reviewed" : "breaks");
-  if (entry.punches.some((p) => p !== automatic && !over.has(p.id) && byHand(p))) found.push("changed");
+  for (const kind of FLAGGED) {
+    const same = flagged.filter((f) => f.flag === kind);
+    if (same.length > 0) found.push(same.every(reviewed) ? `${kind}_reviewed` : kind);
+  }
+  const marked = new Set(flagged.flatMap((f) => [f.start.id, f.end.id]));
+  if (entry.punches.some((p) => p !== automatic && !over.has(p.id) && !marked.has(p.id) && byHand(p))) found.push("changed");
   if (entry.kind === "shift" && entry.end === null) found.push("working");
   return found;
 }

@@ -96,6 +96,9 @@ def _case(
   paid_break_minutes: int = 30,
   break_limit_minutes: int = 15,
   max_breaks_per_day: int = 2,
+  break_grace_minutes: int = 15,
+  lunch_expected_minutes: int = 30,
+  lunch_grace_minutes: int = 15,
   walls: list[tuple[str, str]] = (),  # pyright: ignore[reportArgumentType]
 ) -> dict[str, Any]:
   zone = ZoneInfo(tz)
@@ -106,6 +109,9 @@ def _case(
     "paidBreakMinutes": paid_break_minutes,
     "breakLimitMinutes": break_limit_minutes,
     "maxBreaksPerDay": max_breaks_per_day,
+    "breakGraceMinutes": break_grace_minutes,
+    "lunchExpectedMinutes": lunch_expected_minutes,
+    "lunchGraceMinutes": lunch_grace_minutes,
     "asOf": _ms(as_of),
     "week": [_ms(week[0]), _ms(week[1])],
     "punches": punches,
@@ -196,6 +202,10 @@ def _random_case(rng: random.Random) -> dict[str, Any]:  # noqa: C901 - one gene
     paid_break_minutes=rng.choice((0, 15, 30)),
     break_limit_minutes=rng.choice((0, 10, 15)),
     max_breaks_per_day=rng.choice((0, 1, 2)),
+    # Punches hours apart make most breaks long; a 10-hour grace lets short ones and their clock-outs through too.
+    break_grace_minutes=rng.choice((0, 15, 600)),
+    lunch_expected_minutes=rng.choice((0, 30)),
+    lunch_grace_minutes=rng.choice((0, 15, 600)),
     walls=[
       ((day + timedelta(days=rng.randint(0, 2))).isoformat(), f"{rng.randint(0, 23):02d}:{rng.randint(0, 59):02d}") for _ in range(6)
     ],
@@ -240,7 +250,34 @@ def _hand_picked() -> list[dict[str, Any]]:
     )
   ]
   reviewed = [*three_breaks[:5], {**three_breaks[5], "version": str(uuid4())}, *three_breaks[6:]]
+  out = _local(tue, "15:00")
+
+  def day(*punches: tuple[str | datetime, PunchKind], **fields: Any) -> list[dict[str, Any]]:
+    """A Tuesday's punches, each at a clock time or an instant."""
+    return [_punch(_local(tue, c) if isinstance(c, str) else c, k, **fields) for c, k in punches]
+
+  long_break = day(("07:00", IN), ("09:00", BS), ("09:30", BE), ("15:00", OUT))
+  flagged = [
+    long_break,
+    day(("07:00", IN), ("09:00", BS), ("09:29:59", BE), ("15:00", OUT)),
+    day(("07:00", IN), ("14:50", BS), (out - timedelta(milliseconds=1), BE), (out, OUT)),  # the clock's end-and-out pair
+    day(("07:00", IN), ("14:50", BS), ("15:00", OUT)),
+    day(("07:00", IN), ("12:00", BS), ("15:00", OUT)),
+    [*day(("15:00", IN), ("22:55", BS)), _punch(_local(tue, "23:00"), OUT, automatic=True, dbLogin="postgres")],
+    day(("07:00", IN), ("12:00", LS), ("12:45", LE), ("17:00", OUT)),
+    day(("07:00", IN), ("16:50", LS), ("17:00", OUT)),
+    day(("07:00", IN), ("12:00", LS), ("17:00", OUT)),
+    [long_break[0], {**long_break[1], "version": str(uuid4())}, *long_break[2:]],
+  ]
   return [
+    *(_case("America/New_York", f, as_of=later, week_of=_local(tue, "12:00")) for f in flagged),
+    _case(
+      "America/New_York",
+      day(("07:00", IN), ("09:00", BS), ("09:15", BE), ("15:00", OUT)),
+      as_of=later,
+      week_of=_local(tue, "12:00"),
+      break_limit_minutes=0,
+    ),
     _case("America/New_York", double, as_of=later, week_of=_local(tue, "12:00"), touched=[double[0]["id"]]),
     _case("America/New_York", strays, as_of=later, week_of=_local(tue, "12:00")),
     _case("America/New_York", double[:3], as_of=_local(tue, "12:00"), week_of=_local(tue, "12:00")),
@@ -312,12 +349,19 @@ def _entry_json(e: rules.Entry) -> dict[str, Any]:
 def _answer(case: dict[str, Any]) -> dict[str, Any]:
   """Python's answers, in the shape `drift_driver.mjs` prints."""
   tz, as_of = ZoneInfo(case["tz"]), _dt(case["asOf"])
-  settings = Settings(paid_break_minutes=case["paidBreakMinutes"], break_limit_minutes=case["breakLimitMinutes"])
+  settings = Settings(
+    paid_break_minutes=case["paidBreakMinutes"],
+    break_limit_minutes=case["breakLimitMinutes"],
+    break_grace_minutes=case["breakGraceMinutes"],
+    lunch_expected_minutes=case["lunchExpectedMinutes"],
+    lunch_grace_minutes=case["lunchGraceMinutes"],
+  )
   punches = [_page_punch(p) for p in case["punches"]]
   base = {p.id: p for p in punches}
   draft = [_draft_punch(d) for d in case["draft"]]
   found = rules.entries(punches, as_of=as_of)
   over = rules.over_breaks(found, limit=case["maxBreaksPerDay"], tz=tz)
+  flagged = [rules.flagged_breaks(e, settings=settings) for e in found]
   records = rules.records(base, [d for d in draft if not rules.conflicts(base, [d])])
   after = rules.apply(punches, records)
   refused = rules.refusal(punches, after, {UUID(t) for t in case["touched"]}, as_of=as_of)
@@ -327,7 +371,8 @@ def _answer(case: dict[str, Any]) -> dict[str, Any]:
   millis = timedelta(milliseconds=1)
   return {
     "entries": [_entry_json(e) for e in found],
-    "flags": [[f.value for f in rules.flags(e, over=over)] for e in found],
+    "flags": [[f.value for f in rules.flags(e, over=over, flagged=fl)] for e, fl in zip(found, flagged, strict=True)],
+    "flagged": [[[f.flag.value, str(f.start.id), str(f.end.id)] for f in fl] for fl in flagged],
     "over": sorted([str(i), n] for i, n in over.items()),
     "problems": [rules.problem(e) for e in found],
     "hours": [None if h is None else [h.worked // millis, h.paid_break // millis, h.unpaid // millis] for h in hours],

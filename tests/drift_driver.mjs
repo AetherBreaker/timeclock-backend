@@ -19,6 +19,7 @@ const answers = cases.map((c) => {
   const opts = { paidBreakMinutes: c.paidBreakMinutes, breakLimitMinutes: c.breakLimitMinutes, tz: c.tz, now: c.asOf };
   const found = rules.entries(c.punches, c.asOf);
   const over = rules.overBreaks(found, c.maxBreaksPerDay, c.tz);
+  const flagged = found.map((e) => rules.flaggedBreaks(e, c));
   const base = Object.fromEntries(c.punches.map((p) => [p.id, p]));
   const clean = c.draft.filter((d) => !rules.conflicts(base, [d]).length);
   const records = rules.records(base, clean);
@@ -32,7 +33,8 @@ const answers = cases.map((c) => {
   const week = rules.weekHours(c.punches, { ...opts, week: c.week });
   return {
     entries: found.map(entryJson),
-    flags: found.map((e) => rules.flags(e, over)),
+    flags: found.map((e, i) => rules.flags(e, over, flagged[i])),
+    flagged: flagged.map((fl) => fl.map((f) => [f.flag, f.start.id, f.end.id])),
     over: [...over].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     problems: found.map((e) => rules.problem(e)),
     hours,

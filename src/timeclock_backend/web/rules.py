@@ -7,7 +7,9 @@ the two to the same answers, so a change here goes there too.
 
 # Standard library imports
 from dataclasses import dataclass, replace
+from datetime import timedelta
 from enum import StrEnum
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
@@ -153,8 +155,89 @@ class Flag(StrEnum):
   AUTOMATIC_FIXED = "automatic_fixed"  # grey
   BREAKS = "breaks"  # orange: a break past the day's expected count (`over_breaks`) nobody has reviewed
   BREAKS_REVIEWED = "breaks_reviewed"  # grey
+  # `flagged_breaks`' flags (owner, 2026-11-18): orange, each followed by its grey reviewed form.
+  LONG_BREAK = "long_break"  # a break reaching break_limit_minutes + break_grace_minutes
+  LONG_BREAK_REVIEWED = "long_break_reviewed"
+  LEFT_ON_BREAK = "left_on_break"  # a break short of that, ended at the clock-out
+  LEFT_ON_BREAK_REVIEWED = "left_on_break_reviewed"
+  BREAK_NOT_ENDED = "break_not_ended"  # a long break ended at the clock-out, or any at an automatic one
+  BREAK_NOT_ENDED_REVIEWED = "break_not_ended_reviewed"
+  LONG_LUNCH = "long_lunch"  # a lunch reaching lunch_expected_minutes + lunch_grace_minutes
+  LONG_LUNCH_REVIEWED = "long_lunch_reviewed"
+  LUNCH_NOT_ENDED = "lunch_not_ended"  # a long lunch ended at the clock-out, or any at an automatic one
+  LUNCH_NOT_ENDED_REVIEWED = "lunch_not_ended_reviewed"
   CHANGED = "changed"  # grey: a punch changed or added by hand
   WORKING = "working"  # blue: open
+
+
+# `flagged_breaks`' orange flags, in chip order, each to its reviewed form.
+REVIEWED: Final[Mapping[Flag, Flag]] = MappingProxyType(
+  {
+    Flag.LONG_BREAK: Flag.LONG_BREAK_REVIEWED,
+    Flag.LEFT_ON_BREAK: Flag.LEFT_ON_BREAK_REVIEWED,
+    Flag.BREAK_NOT_ENDED: Flag.BREAK_NOT_ENDED_REVIEWED,
+    Flag.LONG_LUNCH: Flag.LONG_LUNCH_REVIEWED,
+    Flag.LUNCH_NOT_ENDED: Flag.LUNCH_NOT_ENDED_REVIEWED,
+  }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FlaggedBreak:
+  """A break or lunch to look at again: `flag` is one of `REVIEWED`'s keys, `end` its end punch or the clock-out."""
+
+  flag: Flag
+  start: PagePunch
+  end: PagePunch
+
+  @property
+  def reviewed(self) -> bool:
+    """Marked as correct, corrected or added on the page: either of its punches changed by hand."""
+    return self.start.by_hand or self.end.by_hand
+
+
+def flagged_breaks(entry: Entry, *, settings: Settings) -> list[FlaggedBreak]:  # noqa: C901 - one walk, read top to bottom
+  """The entry's ended breaks and lunches that need a second look (owner, 2026-11-18), in time order.
+
+  Long is reaching the threshold: `break_limit_minutes + break_grace_minutes`, or `lunch_expected_minutes +
+  lunch_grace_minutes`. One ended at the clock-out (that instant, or the clock's own end punch 1 µs before it) is "not
+  ended" when long or when the clock-out is automatic, "left on break" when a short break, and nothing when a short
+  lunch, which is unpaid. Times compare cut to the millisecond, as `editor/rules.js` holds them.
+  """
+
+  def cut(at: datetime) -> datetime:
+    return at.replace(microsecond=at.microsecond // 1000 * 1000)
+
+  out = entry.clock_out
+  found: list[FlaggedBreak] = []
+  start: PagePunch | None = None
+  for p in entry.punches:  # the walk's order, so a counted start's next counted punch is what ended it
+    if p.id in entry.ignored:
+      continue
+    if p.kind in {PunchKind.BREAK_START, PunchKind.LUNCH_START}:
+      start = p
+      continue
+    if start is None:
+      continue
+    lunch = start.kind is PunchKind.LUNCH_START
+    if lunch:
+      minutes = settings.lunch_expected_minutes + settings.lunch_grace_minutes
+    else:
+      minutes = settings.break_limit_minutes + settings.break_grace_minutes
+    long = cut(p.at) - cut(start.at) >= timedelta(minutes=minutes)
+    at_out = out is not None and cut(out.at) - cut(p.at) <= timedelta(milliseconds=1)
+    if at_out and (long or (out is not None and out.automatic)):
+      flag = Flag.LUNCH_NOT_ENDED if lunch else Flag.BREAK_NOT_ENDED
+    elif at_out:
+      flag = None if lunch else Flag.LEFT_ON_BREAK
+    elif long:
+      flag = Flag.LONG_LUNCH if lunch else Flag.LONG_BREAK
+    else:
+      flag = None
+    if flag is not None:
+      found.append(FlaggedBreak(flag, start, p))
+    start = None
+  return found
 
 
 def over_breaks(found: Iterable[Entry], *, limit: int, tz: ZoneInfo) -> dict[UUID, int]:
@@ -172,11 +255,11 @@ def over_breaks(found: Iterable[Entry], *, limit: int, tz: ZoneInfo) -> dict[UUI
   return {} if limit == 0 else {i: len(ids) for ids in days.values() for i in ids[limit:]}
 
 
-def flags(entry: Entry, *, over: Mapping[UUID, int]) -> tuple[Flag, ...]:
-  """The entry's flags; `over` is `over_breaks` over the employee's entries.
+def flags(entry: Entry, *, over: Mapping[UUID, int], flagged: Sequence[FlaggedBreak]) -> tuple[Flag, ...]:
+  """The entry's flags; `over` is `over_breaks` over the employee's entries, `flagged` the entry's `flagged_breaks`.
 
-  A reviewed automatic clock-out, or an over break reviewed (corrected, if only marked as correct, or added on the page),
-  says so alone rather than also as Changed.
+  A reviewed automatic clock-out, over break (corrected, if only marked as correct, or added on the page) or flagged
+  break says so alone rather than also as Changed. A flagged kind is reviewed once every one of it is.
   """
   found: list[Flag] = []
   if entry.kind is EntryKind.STRAY or entry.ignored:
@@ -187,7 +270,11 @@ def flags(entry: Entry, *, over: Mapping[UUID, int]) -> tuple[Flag, ...]:
     found.append(Flag.AUTOMATIC if automatic.version is None else Flag.AUTOMATIC_FIXED)
   if extra := [p for p in entry.punches if p.id in over]:
     found.append(Flag.BREAKS_REVIEWED if all(p.by_hand for p in extra) else Flag.BREAKS)
-  if any(p.by_hand for p in entry.punches if p is not automatic and p.id not in over):
+  for orange, grey in REVIEWED.items():
+    if same := [f for f in flagged if f.flag is orange]:
+      found.append(grey if all(f.reviewed for f in same) else orange)
+  marked = {p.id for f in flagged for p in (f.start, f.end)}
+  if any(p.by_hand for p in entry.punches if p is not automatic and p.id not in over and p.id not in marked):
     found.append(Flag.CHANGED)
   if entry.kind is EntryKind.SHIFT and entry.end is None:
     found.append(Flag.WORKING)

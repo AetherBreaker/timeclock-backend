@@ -1,7 +1,7 @@
 """Tests for the shift list (spec 2026-11-05 §7, mockup screens B and I), over real databases."""
 
 # Standard library imports
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -468,3 +468,72 @@ async def test_clear_filters_drops_every_filter_but_the_week(db_page: DbPage) ->
     assert isinstance(select, ui.select)
     assert select.value is None
   assert not button.enabled
+
+
+def _punches(page: DbPage, employee: int, day: int, *punches: tuple[str, str | datetime]) -> list[UUID]:
+  """Punches on a November day at clock times or instants, by a clock's login (the owner's reads as by hand)."""
+  return [
+    page.db.punch(employee, kind, _ny(day, at) if isinstance(at, str) else at, db_login="timeclock_clock_front")
+    for kind, at in punches
+  ]
+
+
+async def test_a_long_break_needs_attention_until_marked_correct(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  first, start, _, _ = _punches(
+    db_page, bob, 3, ("clock_in", "08:00"), ("break_start", "10:00"), ("break_end", "10:30"), ("clock_out", "16:00")
+  )
+  await db_page.user.open("/")
+  await db_page.user.should_see(marker=f"row-{first}")
+  await db_page.user.should_see("Long break")
+  await db_page.user.should_see(marker="attention-long_break", content="1 shift with a long break")
+  db_page.db.correct(start, "amend", new_at=_ny(3, "10:00"))  # Mark as correct: an amend to its own time
+  await db_page.user.open("/")
+  await db_page.user.should_see("Long break, reviewed")
+  await db_page.user.should_not_see(marker="attention-long_break")
+  await db_page.user.should_not_see("Changed")  # the review says so alone
+
+
+async def test_a_short_break_ended_at_the_clock_out_is_left_on_break(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  out = _ny(3, "16:00")
+  # The clock writes the break's end 1 µs before a clock-out made on a break.
+  pair = (("break_end", out - timedelta(microseconds=1)), ("clock_out", out))
+  _punches(db_page, bob, 3, ("clock_in", "08:00"), ("break_start", "15:50"), *pair)
+  await db_page.user.open("/")
+  await db_page.user.should_see("Left on break")
+  await db_page.user.should_see(marker="attention-left_on_break", content="1 shift ended on a break")
+
+
+async def test_a_break_never_ended_shows_break_not_ended(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  _punches(db_page, bob, 3, ("clock_in", "08:00"), ("break_start", "12:00"), ("clock_out", "16:00"))
+  await db_page.user.open("/")
+  await db_page.user.should_see("Break not ended")
+  await db_page.user.should_see(marker="attention-break_not_ended", content="1 shift with a break not ended")
+
+
+async def test_lunches_show_long_lunch_and_lunch_not_ended(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  _punches(db_page, bob, 2, ("clock_in", "08:00"), ("lunch_start", "12:00"), ("lunch_end", "12:45"), ("clock_out", "16:00"))
+  _punches(db_page, bob, 3, ("clock_in", "08:00"), ("lunch_start", "12:00"), ("clock_out", "16:00"))
+  await db_page.user.open("/")
+  await db_page.user.should_see("Long lunch")
+  await db_page.user.should_see(marker="attention-long_lunch", content="1 shift with a long lunch")
+  await db_page.user.should_see("Lunch not ended")
+  await db_page.user.should_see(marker="attention-lunch_not_ended", content="1 shift with a lunch not ended")
+
+
+async def test_two_long_breaks_count_on_one_chip(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  first, *_ = _punches(
+    db_page,
+    bob,
+    3,
+    *(("clock_in", "08:00"), ("break_start", "09:00"), ("break_end", "09:40")),
+    *(("break_start", "13:00"), ("break_end", "13:40"), ("clock_out", "16:00")),
+  )
+  await db_page.user.open("/")
+  await db_page.user.should_see(marker=f"row-{first}")
+  await db_page.user.should_see("2 long breaks")
+  await db_page.user.should_see(marker="attention-long_break", content="1 shift with a long break")
