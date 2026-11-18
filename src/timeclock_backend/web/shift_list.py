@@ -18,6 +18,7 @@ from timeclock_schema.enums import EmployeeRole, PunchKind
 from . import text
 from .db import DatabaseChangedError, editor_transaction
 from .gate import SignedOutError
+from .report_send import open_report_send
 from .rules import EntryKind, Flag, entries, entry_hours, flags, over_breaks, problem, week_hours
 from .shell import prefs
 from .store import load_context, load_punches
@@ -71,6 +72,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
   # The last read: (context, punches by employee, the week's Monday, its bounds, the read's now); None until one works.
   data: tuple[Context, dict[int, list[PagePunch]], date, datetime, datetime, datetime] | None = None
   down = False
+  opening = False  # a report send dialog is being opened (send_report)
   reading = asyncio.Lock()  # a live wake and a click read in turn, so an older read never lands over a newer one
 
   def address() -> str:
@@ -157,6 +159,19 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
     ui.navigate.history.replace(address())
     rows.refresh()
 
+  async def send_report() -> None:
+    nonlocal opening
+    # `opening`: a double click's second task would otherwise open a second dialog under the first while the first
+    # reads its addresses; once one is open, its backdrop takes the clicks.
+    if data is None or opening:  # data None: no read has landed yet, so there's no week to send
+      return
+    opening = True
+    try:
+      # data[2]: the Monday the read resolved, real even while `week` is None (this week).
+      await open_report_send(signin, monday=data[2], pools=pools, gate=gate, storage=storage, session=session, tz=data[0].tz, h24=h24)
+    finally:
+      opening = False
+
   def clear() -> None:
     """Drop every filter but the week."""
     nonlocal attention
@@ -180,6 +195,8 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
         with ui.button(on_click=step(7)).props("flat dense round").mark("week-next"):
           ui.element("span").classes("page-icon icon-next")
       ui.button("This week", on_click=lambda: go(None)).props("flat no-caps").classes("link-button").mark("this-week")
+      if signin.developer:
+        ui.button(text.SEND_REPORT, on_click=send_report).props("flat no-caps").classes("link-button").mark("send-report")
       if technical:
         with ui.row().classes("chip blue"):
           ui.element("span").classes("page-icon icon-code")

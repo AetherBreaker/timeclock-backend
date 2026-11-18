@@ -1,4 +1,4 @@
-"""Boot sequence: bootstrap, relay, job runner and settings listeners, running until a shutdown."""
+"""Boot sequence: bootstrap, relay, job runner, settings and report send listeners, running until a shutdown."""
 
 # Standard library imports
 import asyncio
@@ -15,6 +15,7 @@ from aeth_ext.monitoring import run_heartbeat_async
 from timeclock_backend.bootstrap import bootstrap
 from timeclock_backend.databases import DATABASES
 from timeclock_backend.jobs.auto_clock_out import AutoClockOutJob, listen_for_settings
+from timeclock_backend.jobs.report_sends import listen_for_report_sends
 from timeclock_backend.relay import start_relay
 from timeclock_backend.schedule import DYNAMIC, STATIC
 from timeclock_backend.scheduling import PgRunStore, Runner
@@ -73,7 +74,8 @@ async def main() -> None:
 
   # Each listener's first pass (on connect) schedules its idle entry.
   listeners = [
-    create_task(listen_for_settings(e.job), name=f"listen:{e.job.db.name}") for e in DYNAMIC if isinstance(e.job, AutoClockOutJob)
+    *(create_task(listen_for_settings(e.job), name=f"listen:{e.job.db.name}") for e in DYNAMIC if isinstance(e.job, AutoClockOutJob)),
+    *(create_task(listen_for_report_sends(db), name=f"report-sends:{db.name}") for db in DATABASES),
   ]
   for task in (heartbeat, *listeners):
     task.add_done_callback(_surface_task_failure)

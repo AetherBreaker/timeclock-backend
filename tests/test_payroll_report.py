@@ -1,6 +1,7 @@
 """Tests for the payroll report: its week, its workbooks and the email that carries them."""
 
 # Standard library imports
+import dataclasses
 import io
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
@@ -281,6 +282,31 @@ async def test_an_edit_applies_to_the_next_run(migrated: Database, sent: Sent) -
   await set_recipients(migrated, "c@example.com")
   await j.main(SCHEDULED)
   assert [m["To"] for m, _ in sent] == ["a@example.com", "c@example.com"]
+
+
+async def test_a_test_database_send_is_marked_everywhere(migrated: Database, sent: Sent) -> None:
+  await job(dataclasses.replace(migrated, production=False), ("default",)).main(SCHEDULED)
+  [(msg, _)] = sent
+  assert msg["Subject"].startswith("TEST — ")
+  attachments = list(msg.iter_attachments())
+  assert attachments
+  for part in attachments:
+    assert str(part.get_filename()).startswith("TEST ")
+    assert str(openpyxl.load_workbook(io.BytesIO(part.get_content())).properties.title).startswith("TEST ")
+  body = msg.get_body()
+  assert body is not None
+  assert "Built from the test database, not real payroll." in body.get_content()
+
+
+async def test_send_appends_the_note_and_sends_to_the_given_addresses(migrated: Database, sent: Sent) -> None:
+  note = "Sent by hand by x@example.com at 2026-11-18 10:42 (America/New_York)."
+  await job(migrated, ("default",)).send(PayrollReportJob.week(SCHEDULED), ["b@example.com"], note=note)
+  [(msg, _)] = sent
+  assert [a.addr_spec for a in msg["To"].addresses] == ["b@example.com"]
+  assert not msg["Subject"].startswith("TEST")
+  body = msg.get_body()
+  assert body is not None
+  assert note in body.get_content()
 
 
 def test_groups_is_keyword_only() -> None:
