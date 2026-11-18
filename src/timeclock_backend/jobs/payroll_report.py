@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from email.headerregistry import Address
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import override
+from typing import TYPE_CHECKING, override
 
 # Third party imports
 from aeth_ext import initialize
@@ -25,6 +25,10 @@ from timeclock_backend.reports import Period, ScopeEmployee, fill_tab, write_wor
 from timeclock_backend.reports.payroll import PAYROLL_TABS
 from timeclock_backend.scheduling import JobBase
 from timeclock_backend.settings import SETTINGS
+
+if TYPE_CHECKING:
+  # Standard library imports
+  from collections.abc import Sequence
 
 
 class PayrollReportJob(JobBase):
@@ -52,14 +56,12 @@ class PayrollReportJob(JobBase):
 
   @override
   async def main(self, scheduled_for: datetime) -> None:
-    """Build every covered group's workbook in a temporary directory, email them together, and delete them.
+    """Send last week's report to the entry's `backend.report_recipients` rows.
 
     Raises:
       ValueError: The entry has no recipients, or a named group doesn't exist (a failed run, not an email to nobody or a
         silently smaller one).
     """
-    period = self.week(scheduled_for)
-    stem = f"Timeclock Report {period.start} to {period.end}"
     async with await connect(self.database.name) as conn:
       # Read at every run, so an edit applies from the next one.
       recipients = [
@@ -68,8 +70,22 @@ class PayrollReportJob(JobBase):
           await conn.execute("SELECT email FROM backend.report_recipients WHERE report = %s ORDER BY email", (self.name,))
         ).fetchall()
       ]
-      if not recipients:
-        raise ValueError(f"no recipients for {self.name} in backend.report_recipients")
+    if not recipients:
+      raise ValueError(f"no recipients for {self.name} in backend.report_recipients")
+    await self.send(self.week(scheduled_for), recipients)
+
+  async def send(self, period: Period, recipients: Sequence[str], *, note: str | None = None) -> None:
+    """Build every covered group's workbook for `period`, email them to `recipients`, and delete them.
+
+    Outside production every copy says TEST (subject, file names, titles, body): the test database holds production's
+    punches, so an unmarked workbook would pass for real payroll. `note` ends the body on a line of its own.
+
+    Raises:
+      ValueError: A named group doesn't exist (a failed run, not a silently smaller email).
+    """
+    test = not self.database.production
+    stem = f"Timeclock Report {period.start} to {period.end}"
+    async with await connect(self.database.name) as conn:
       known = {row["name"]: row["id"] for row in await (await conn.execute("SELECT id, name FROM groups ORDER BY id")).fetchall()}
       names = list(known) if self.groups is None else list(self.groups)
       if missing := [name for name in names if name not in known]:
@@ -99,15 +115,22 @@ class PayrollReportJob(JobBase):
       with TemporaryDirectory() as tmp:
         paths: list[Path] = []
         for name in names:
-          path = Path(tmp) / f"{name} {stem}.xlsx"
+          title = f"{'TEST ' * test}{name} {stem}"
+          path = Path(tmp) / f"{title}.xlsx"
           tabs = [(tab.name, await fill_tab(conn, tab, period, scopes[name], breaks=breaks[name])) for tab in PAYROLL_TABS]
-          write_workbook(path, f"{name} {stem}", tabs)
+          write_workbook(path, title, tabs)
           paths.append(path)
         # Placeholder wording until the owner settles it from the first smoke-test email (spec §7.2).
         msg = prepare_email_message(
           {
-            "subject": f"{', '.join(names)} {stem}",
-            "body": f"Timeclock reports for {period.start} to {period.end}, attached: {', '.join(names)}.",
+            "subject": f"{'TEST — ' * test}{', '.join(names)} {stem}",
+            "body": "\n".join(
+              [
+                f"Timeclock reports for {period.start} to {period.end}, attached: {', '.join(names)}.",
+                *(["Built from the test database, not real payroll."] * test),
+                *([note] if note else []),
+              ]
+            ),
             "from_addr": SETTINGS.alerts_email,
             # Address objects: aeth_ext reads a bare 4-item sequence of strings as one Address and raises.
             "to_addrs": [Address(addr_spec=r) for r in recipients],
