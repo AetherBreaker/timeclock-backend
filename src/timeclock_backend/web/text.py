@@ -153,6 +153,31 @@ def week_label(monday: date) -> str:
   return f"{first} {monday.day} to {sunday.day}, {sunday.year}"
 
 
+# The shift list's manual payroll report send (spec 2026-11-18).
+SEND_REPORT = "Send payroll report…"
+REPORT_TITLE = "Send the payroll report"
+REPORT_TEST_NOTE = "Test database: built from test data, and the email and files are marked TEST."
+REPORT_WAITING = "Waiting for the backend…"
+NO_REPORT_RECIPIENTS = "No addresses are enrolled for the payroll report."
+SELECT_ALL = "Select all"
+SELECT_NONE = "Select none"
+
+
+def send_to(count: int) -> str:
+  """The send button: "Send to 2"."""
+  return f"Send to {count}"
+
+
+def report_sent(count: int, at: datetime, tz: ZoneInfo, *, h24: bool) -> str:
+  """A manual send's outcome: "Sent to 1 address at 10:42 AM"."""
+  return f"Sent to {count} address{'es' * (count != 1)} at {clock_time(at, tz, h24=h24)}"
+
+
+def report_failed(error: str) -> str:
+  """A manual send's failure, as the database or the backend gave it."""
+  return f"Failed: {error}"
+
+
 def stamp(at: datetime, tz: ZoneInfo, *, h24: bool) -> str:
   """A moment in technical details: "Oct 28, 2:14 PM"."""
   local = at.astimezone(tz)
