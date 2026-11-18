@@ -689,11 +689,16 @@ table.sh .unpaid {
   color: var(--chip-orange);
 }
 
-/* The technical columns have no longest value: they wrap within their width instead of spilling. */
+/* The technical columns and a stray run's punches have no longest value: they wrap within their width instead of
+   spilling. */
 table.sh td.mono {
   font-family: Consolas, "Courier New", monospace;
   font-size: 12px;
   color: var(--details);
+}
+
+table.sh td.mono,
+table.sh td.run {
   white-space: normal;
   overflow-wrap: anywhere;
 }
