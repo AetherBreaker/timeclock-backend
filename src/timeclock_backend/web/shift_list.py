@@ -365,7 +365,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
                 TextElement(tag="td", text=text.day_label(e.start.astimezone(tz).date()))
                 if e.kind is EntryKind.STRAY or e.shift is None:
                   listed = ", ".join(f"{text.KIND_LABEL[p.kind]} {text.clock_time(p.at, tz, h24=h24)}" for p in e.punches)
-                  TextElement(tag="td", text=listed).props(f"colspan={2 + breaks + lunch}")
+                  TextElement(tag="td", text=listed).classes("run").props(f"colspan={2 + breaks + lunch}")
                   for _ in range(2 if breaks else 1):  # worked (while breaks show) and paid
                     TextElement(tag="td", text="none").classes("num muted")
                 else:
