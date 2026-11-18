@@ -87,6 +87,13 @@ startup.bootstrap = no_bootstrap
 # The real STATIC payroll entry would catch up against a database that isn't there, and on Linux log its refused connection.
 startup.STATIC = ()
 startup.DYNAMIC = (Entry("slow", At(datetime.now(UTC)), Slow()),) if SLOW else ()
+
+async def nothing(db):
+  pass
+
+# Likewise the report send sweep and listeners: no database is there.
+startup.fail_interrupted = nothing
+startup.listen_for_report_sends = nothing
 real_start_relay = startup.start_relay
 
 async def start_relay_then_request(**kwargs):
