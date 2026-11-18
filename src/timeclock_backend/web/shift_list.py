@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _BREAK_KINDS: Final = frozenset({PunchKind.BREAK_START, PunchKind.BREAK_END})
+_LUNCH_KINDS: Final = frozenset({PunchKind.LUNCH_START, PunchKind.LUNCH_END})
 # The attention bar's counts, in the mockup's order: automatic clock-outs, then what needs fixing.
 _ATTENTION_ORDER: Final = ("automatic", "breaks", *(f"extra:{kind}" for kind in PunchKind), "stray", "mixed")
 _REVIEW: Final = {Flag.AUTOMATIC: "automatic", Flag.BREAKS: "breaks"}  # orange flags' attention keys
@@ -315,8 +316,9 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
                 ui.label("You: another editor changes these")
             total = week_hours(theirs, settings=ctx.settings, tz=tz, week=(start, end), now=at)
             # Breaks show unless they're off and no shift here has a break punch, ignored ones included (spec
-            # 2026-11-13); without breaks worked equals paid, so Worked goes with them.
+            # 2026-11-13); without breaks worked equals paid, so Worked goes with them. Lunch the same way (2026-11-18).
             breaks = ctx.settings.breaks_enabled or any(p.kind in _BREAK_KINDS for e, _, _, _ in visible for p in e.punches)
+            lunch = ctx.settings.lunches_enabled or any(p.kind in _LUNCH_KINDS for e, _, _, _ in visible for p in e.punches)
             with ui.row().classes("tot"):  # paid hours: worked plus paid breaks, as the weekly hours alert counts them
               ui.label("Week:")
               ui.label(text.hm(total.worked + total.paid_break)).classes("tot-hours").mark(f"week-paid-{person.id}")
@@ -330,17 +332,20 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
             ui.label(text.employee_details(person, ctx.groups, tz, h24=h24)).classes("empdet")
           with ui.element("table").classes("sh"):
             with ui.element("tr"):
-              for heading in ("Day", "Clock in", "Clock out"):
-                TextElement(tag="th", text=heading)
+              # Each heading's class sets its column's width (theme.css), so every card's columns line up; the status
+              # column takes the rest.
+              for heading, width in (("Day", "c-day"), ("Clock in", "c-in"), ("Clock out", "c-out")):
+                TextElement(tag="th", text=heading).classes(width)
               if breaks:
-                TextElement(tag="th", text="Breaks").mark(f"head-breaks-{person.id}")
-              TextElement(tag="th", text="Lunch")
+                TextElement(tag="th", text="Breaks").classes("c-breaks").mark(f"head-breaks-{person.id}")
+              if lunch:
+                TextElement(tag="th", text="Lunch").classes("c-lunch").mark(f"head-lunch-{person.id}")
               if breaks:
-                TextElement(tag="th", text="Worked").classes("num").mark(f"head-worked-{person.id}")
-              TextElement(tag="th", text="Paid").classes("num")
+                TextElement(tag="th", text="Worked").classes("c-worked num").mark(f"head-worked-{person.id}")
+              TextElement(tag="th", text="Paid").classes("c-paid num")
               if technical:
-                TextElement(tag="th", text="Clock")
-                TextElement(tag="th", text="Punches")
+                TextElement(tag="th", text="Clock").classes("c-clock")
+                TextElement(tag="th", text="Punches").classes("c-punches")
               TextElement(tag="th", text="")
             for e, found_flags, _, day_breaks in visible:
               edge = " red" if Flag.NEEDS_FIXING in found_flags else " orange" if _REVIEW.keys() & set(found_flags) else ""
@@ -351,7 +356,7 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
                 TextElement(tag="td", text=text.day_label(e.start.astimezone(tz).date()))
                 if e.kind is EntryKind.STRAY or e.shift is None:
                   listed = ", ".join(f"{text.KIND_LABEL[p.kind]} {text.clock_time(p.at, tz, h24=h24)}" for p in e.punches)
-                  TextElement(tag="td", text=listed).props(f"colspan={4 if breaks else 3}")
+                  TextElement(tag="td", text=listed).props(f"colspan={2 + breaks + lunch}")
                   for _ in range(2 if breaks else 1):  # worked (while breaks show) and paid
                     TextElement(tag="td", text="none").classes("num muted")
                 else:
@@ -365,7 +370,9 @@ async def draw_shift_list(  # noqa: C901, PLR0915 - one page: its state, its rea
                   assert hours is not None  # a shift's
                   # Breaks as "<n> · h:mm", then the part of them total_hours didn't pay when it's a minute or more;
                   # lunch as "h:mm", with its count only when there are several.
-                  for spans, bare in ((shift.breaks, False), (shift.lunches, True))[0 if breaks else 1 :]:
+                  for spans, bare, column in ((shift.breaks, False, breaks), (shift.lunches, True, lunch)):
+                    if not column:
+                      continue
                     length = sum(((s.end or at) - s.start for s in spans), timedelta())
                     told = "" if not spans else text.hm(length) if bare and len(spans) == 1 else f"{len(spans)} · {text.hm(length)}"
                     with ui.element("td"):
