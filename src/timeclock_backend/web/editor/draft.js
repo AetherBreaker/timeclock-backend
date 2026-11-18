@@ -10,7 +10,7 @@
 // The hours count up to now, as the server's do.
 //
 // Adding a shift (spec §6.13), the base has a `day` and nothing opened; the new shift is the added punches alone.
-import { PAGE_INSTANCE_ID, PENDING, byHand, clockTime, entries, localDate, localParts, order, overlapping, records, refusal, zonedTime } from "./rules.js";
+import { PAGE_INSTANCE_ID, PENDING, byHand, clockTime, entries, hm, localDate, localParts, order, overlapping, records, refusal, reviewed, zonedTime } from "./rules.js";
 
 const ALL = Infinity;
 const LABEL = {
@@ -486,6 +486,31 @@ export function breaksNote(entry, over, { tz, limit, first }) {
   );
   const expected = `at most ${limit} ${limit === 1 ? "is" : "are"} expected`;
   return { text: `${first} took ${said}, and ${expected}. Change them below, or mark them as correct if they're right.`, ids: open.map((p) => p.id) };
+}
+
+// The flagged breaks' callouts (owner, 2026-11-18): one per unreviewed rules.js flaggedBreaks result, as {text, id} for
+// its Mark as correct (the break's start punch). One ended at the clock-out names the clock-out's time: the clock writes
+// the break's end a moment before it, which would read a minute early.
+export function flaggedNotes(entry, flagged, { tz, h24, first, breakLimitMinutes, breakGraceMinutes, lunchExpectedMinutes, lunchGraceMinutes }) {
+  const time = (ms) => clockTime(ms, tz, h24);
+  const fix = "Change it below, or mark it as correct if it's right.";
+  return flagged
+    .filter((f) => !reviewed(f))
+    .map(({ flag, start, end }) => {
+      const from = time(start.at);
+      const out = entry.clockOut === null ? null : time(entry.clockOut.at);
+      const breaks = `breaks of ${hm((breakLimitMinutes + breakGraceMinutes) * 60000)} or more are flagged`;
+      const lunches = `lunches of ${hm((lunchExpectedMinutes + lunchGraceMinutes) * 60000)} or more are flagged`;
+      const lasted = `from ${from} to ${time(end.at)} lasted ${hm(end.at - start.at)}`;
+      const text = {
+        long_break: `${first}'s break ${lasted}; ${breaks}. ${fix}`,
+        long_lunch: `${first}'s lunch ${lasted}; ${lunches}. ${fix}`,
+        left_on_break: `${first} clocked out at ${out} during a break that started at ${from}. ${fix}`,
+        break_not_ended: `${first} was still on a break from ${from} when the shift ended at ${out}. Add when the break really ended below, or mark it as correct if it's right.`,
+        lunch_not_ended: `${first} was still at lunch from ${from} when the shift ended at ${out}. Add when the lunch really ended below, or mark it as correct if it's right.`,
+      }[flag];
+      return { text, id: start.id };
+    });
 }
 
 // The "Needs fixing" banner (spec §8), or null when the entry holds no problem.

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as d from "../../src/timeclock_backend/web/editor/draft.js";
-import { entries, flags, overBreaks, zonedTime } from "../../src/timeclock_backend/web/editor/rules.js";
+import { entries, flaggedBreaks, flags, overBreaks, zonedTime } from "../../src/timeclock_backend/web/editor/rules.js";
 
 const TZ = "America/New_York";
 const OFFLINE = "The connection is interrupted. You can keep editing, and save your changes as soon as it's back.";
@@ -527,4 +527,42 @@ test("past the day's expected breaks, the callout names them and Mark as correct
   const [after] = entries(d.punches(marked), Infinity);
   assert.equal(d.breaksNote(after, overBreaks([after], 2, TZ), { tz: TZ, limit: 2, first: "Bob" }), null);
   assert.deepEqual(flags(after, overBreaks([after], 2, TZ), []), ["breaks_reviewed"]);
+});
+
+const FLAG_SETTINGS = { breakLimitMinutes: 15, breakGraceMinutes: 15, lunchExpectedMinutes: 30, lunchGraceMinutes: 15 };
+// Bob's Tuesday from 7 AM, as a draft, with its flagged breaks' callouts.
+const flagNotes = (...punches) => {
+  const draft = d.newDraft(base([punch(1, "clock_in", 3, "07:00"), ...punches]));
+  const [entry] = entries(d.punches(draft), Infinity);
+  return { draft, notes: d.flaggedNotes(entry, flaggedBreaks(entry, FLAG_SETTINGS), { tz: TZ, h24: false, first: "Bob", ...FLAG_SETTINGS }) };
+};
+const FIX = "Change it below, or mark it as correct if it's right.";
+
+test("the flagged breaks' callouts say what happened and Mark as correct reviews them", () => {
+  const long = flagNotes(punch(2, "break_start", 3, "14:10"), punch(3, "break_end", 3, "14:52"), punch(4, "clock_out", 3, "17:00"));
+  assert.deepEqual(long.notes, [{ text: `Bob's break from 2:10 PM to 2:52 PM lasted 0:42; breaks of 0:30 or more are flagged. ${FIX}`, id: id(2) }]);
+  const left = `Bob clocked out at 5:00 PM during a break that started at 4:48 PM. ${FIX}`;
+  assert.deepEqual(flagNotes(punch(2, "break_start", 3, "16:48"), punch(4, "clock_out", 3, "17:00")).notes, [{ text: left, id: id(2) }]);
+  // The clock's own pair: the break's end 1 ms before the clock-out (a microsecond, cut to milliseconds).
+  const pair = [punch(3, "break_end", 3, "17:00", { at: at(3, "17:00") - 1 }), punch(4, "clock_out", 3, "17:00")];
+  assert.deepEqual(flagNotes(punch(2, "break_start", 3, "16:48"), ...pair).notes, [{ text: left, id: id(2) }]);
+  assert.deepEqual(flagNotes(punch(2, "break_start", 3, "14:10"), punch(4, "clock_out", 3, "21:00")).notes, [
+    {
+      text: "Bob was still on a break from 2:10 PM when the shift ended at 9:00 PM. Add when the break really ended below, or mark it as correct if it's right.",
+      id: id(2),
+    },
+  ]);
+  assert.deepEqual(flagNotes(punch(2, "lunch_start", 3, "12:00"), punch(3, "lunch_end", 3, "12:50"), punch(4, "clock_out", 3, "17:00")).notes, [
+    { text: `Bob's lunch from 12:00 PM to 12:50 PM lasted 0:50; lunches of 0:45 or more are flagged. ${FIX}`, id: id(2) },
+  ]);
+  assert.deepEqual(flagNotes(punch(2, "lunch_start", 3, "12:00"), punch(4, "clock_out", 3, "17:00")).notes, [
+    {
+      text: "Bob was still at lunch from 12:00 PM when the shift ended at 5:00 PM. Add when the lunch really ended below, or mark it as correct if it's right.",
+      id: id(2),
+    },
+  ]);
+  const marked = d.confirm(long.draft, long.notes[0].id);
+  const [after] = entries(d.punches(marked), Infinity);
+  assert.deepEqual(d.flaggedNotes(after, flaggedBreaks(after, FLAG_SETTINGS), { tz: TZ, h24: false, first: "Bob", ...FLAG_SETTINGS }), []);
+  assert.deepEqual(flags(after, new Map(), flaggedBreaks(after, FLAG_SETTINGS)), ["long_break_reviewed"]);
 });
