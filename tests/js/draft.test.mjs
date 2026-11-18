@@ -526,5 +526,5 @@ test("past the day's expected breaks, the callout names them and Mark as correct
   assert.deepEqual(d.changes(marked, { tz: TZ, h24: false }), ["Marked the break at 1:00 PM as correct"]);
   const [after] = entries(d.punches(marked), Infinity);
   assert.equal(d.breaksNote(after, overBreaks([after], 2, TZ), { tz: TZ, limit: 2, first: "Bob" }), null);
-  assert.deepEqual(flags(after, overBreaks([after], 2, TZ)), ["breaks_reviewed"]);
+  assert.deepEqual(flags(after, overBreaks([after], 2, TZ), []), ["breaks_reviewed"]);
 });

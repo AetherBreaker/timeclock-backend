@@ -10,7 +10,7 @@ from timeclock_schema.enums import EmployeeRole, Finger, PunchKind
 
 # Local folder imports
 from .gate import EndReason
-from .rules import Flag, RecordAction
+from .rules import REVIEWED, Flag, RecordAction
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -186,8 +186,16 @@ def stamp(at: datetime, tz: ZoneInfo, *, h24: bool) -> str:
   return f"{_MONTHS[local.month - 1][:3]} {local.day}, {clock_time(at, tz, h24=h24)}"
 
 
-def flag_label(flag: Flag, problem: str | None, ignored: int, *, breaks: int = 0) -> str:  # noqa: PLR0911 - one return per flag
-  """A row's chip (spec §5.5); `problem` and `ignored` say what needs fixing, `breaks` the over breaks' day count."""
+def flag_label(flag: Flag, problem: str | None, ignored: int, *, breaks: int = 0, times: int = 1) -> str:  # noqa: C901, PLR0911 - one return per flag
+  """A row's chip (spec §5.5).
+
+  `problem` and `ignored` say what needs fixing, `breaks` the over breaks' day count, `times` how many of the shift's
+  `flagged_breaks` the chip stands for.
+  """
+  if (orange := next((o for o, grey in REVIEWED.items() if flag in {o, grey}), None)) is not None:
+    one, several = _FLAGGED_LABEL[orange]
+    said = one if times == 1 or several is None else f"{times} {several}"
+    return said + ", reviewed" * (flag is not orange)
   match flag:
     case Flag.NEEDS_FIXING if problem == "stray":
       return "Stray punch" if ignored == 1 else "Stray punches"
@@ -208,6 +216,30 @@ def flag_label(flag: Flag, problem: str | None, ignored: int, *, breaks: int = 0
       return "Changed"
     case Flag.WORKING:
       return "Working now"
+    case _:  # `flagged_breaks`' flags are labelled above
+      raise AssertionError(flag)
+
+
+# `flagged_breaks`' chips: one's label, and several's after their count (None: never more than one in a shift).
+_FLAGGED_LABEL: Final[Mapping[Flag, tuple[str, str | None]]] = MappingProxyType(
+  {
+    Flag.LONG_BREAK: ("Long break", "long breaks"),
+    Flag.LEFT_ON_BREAK: ("Left on break", None),
+    Flag.BREAK_NOT_ENDED: ("Break not ended", None),
+    Flag.LONG_LUNCH: ("Long lunch", "long lunches"),
+    Flag.LUNCH_NOT_ENDED: ("Lunch not ended", None),
+  }
+)
+# Their attention bar counts, after "<n> shifts".
+_FLAGGED_ATTENTION: Final[Mapping[str, str]] = MappingProxyType(
+  {
+    Flag.LONG_BREAK.value: "with a long break",
+    Flag.LEFT_ON_BREAK.value: "ended on a break",
+    Flag.BREAK_NOT_ENDED.value: "with a break not ended",
+    Flag.LONG_LUNCH.value: "with a long lunch",
+    Flag.LUNCH_NOT_ENDED.value: "with a lunch not ended",
+  }
+)
 
 
 def attention_label(key: str, n: int) -> str:
@@ -216,6 +248,8 @@ def attention_label(key: str, n: int) -> str:
     return count(n, "automatic clock-out")
   if key == "breaks":
     return f"{count(n, 'shift')} with too many breaks"
+  if key in _FLAGGED_ATTENTION:
+    return f"{count(n, 'shift')} {_FLAGGED_ATTENTION[key]}"
   if key == "stray":
     return count(n, "stray punch", "stray punches")
   if key.startswith("extra:"):
@@ -236,6 +270,8 @@ CHIP: Final[Mapping[Flag, str]] = MappingProxyType(
     Flag.AUTOMATIC_FIXED: "grey",
     Flag.BREAKS: "orange",
     Flag.BREAKS_REVIEWED: "grey",
+    **dict.fromkeys(REVIEWED, "orange"),
+    **dict.fromkeys(REVIEWED.values(), "grey"),
     Flag.CHANGED: "grey",
     Flag.WORKING: "blue",
   }

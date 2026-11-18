@@ -3,7 +3,7 @@
 // (shift_editor.py's save_shift) and `saveResult` is the answer. The logic is draft.js's; this file draws it.
 import { markRaw } from "vue";
 import * as D from "shift-editor/draft.js";
-import { clockTime, entries, entryHours, flags, hm, localDate, order, overBreaks, weekHours } from "shift-editor/rules.js";
+import { clockTime, entries, entryHours, flaggedBreaks, flags, hm, localDate, order, overBreaks, weekHours } from "shift-editor/rules.js";
 import TimeField from "shift-editor/time_field.js";
 import Timeline from "shift-editor/timeline.js";
 
@@ -210,6 +210,7 @@ export default {
           const out = e.clockOut;
           const old = before.get(e.key);
           const day = localDate(e.start, this.tz);
+          const flagged = e.kind === "shift" ? flaggedBreaks(e, d.base) : [];
           return {
             key: e.key,
             entry: e,
@@ -219,7 +220,7 @@ export default {
             red,
             strays: new Set(moved.map((p) => p.id)),
             banner: e.kind === "new" ? null : D.banner(e, { tz: this.tz, h24: this.h24 }), // a shift being added says what it lacks under Save
-            flags: flags(e, over),
+            flags: flags(e, over, flagged),
             breaksNote: e.kind === "shift" ? D.breaksNote(e, over, { tz: this.tz, limit: d.base.maxBreaksPerDay, first: this.first }) : null,
             automatic: out !== null && out.automatic && out.version === null ? out : null,
             hours: e.kind === "shift" ? entryHours(e, this.current, this.hoursOpts) : null,
