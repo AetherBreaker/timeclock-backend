@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 NY = ZoneInfo("America/New_York")
 SCHEDULED = datetime(2026, 11, 9, 6, tzinfo=NY)  # the Monday after the week 2026-11-02 to 2026-11-08
-RECIPIENTS = ("jacob.ogden@sweetfiretobacco.com",)
+RECIPIENTS = ("a@example.com",)
 BOOK = "Office Timeclock Report 2026-11-02 to 2026-11-08.xlsx"
 _pins = count(3000)
 
@@ -58,9 +58,18 @@ WEEKLY_HOURS_HEADER = ["Employee Name", "Paid Hours", "Hours", "Breaks", "Lunche
 type Sent = list[tuple[EmailMessage, dict[str, list[list[Any]]]]]
 
 
+async def set_recipients(db: Database, *emails: str, report: str = "payroll_report") -> None:
+  """Replace `report`'s rows in `backend.report_recipients` with `emails`."""
+  async with await connect(db.name) as conn:
+    await conn.execute("DELETE FROM backend.report_recipients WHERE report = %s", (report,))
+    for email in emails:
+      await conn.execute("INSERT INTO backend.report_recipients VALUES (%s, %s)", (report, email))
+
+
 @pytest.fixture
 async def migrated(fresh_database: Database) -> Database:
   await bootstrap([fresh_database])
+  await set_recipients(fresh_database, *RECIPIENTS)  # in place of the migration's seed
   return fresh_database
 
 
@@ -115,7 +124,10 @@ async def breaks_off(db: Database) -> None:
 
 
 def job(db: Database, groups: tuple[str, ...] | None = None) -> PayrollReportJob:
-  return PayrollReportJob(db, RECIPIENTS, groups)
+  """The job as the runner registers it: named after its entry, whose recipients it reads."""
+  j = PayrollReportJob(db, groups=groups)
+  j.name = "payroll_report"
+  return j
 
 
 SHIFT_SUMMARY_SHORT = [
@@ -240,10 +252,41 @@ async def test_one_email_with_one_workbook_per_group(migrated: Database, sent: S
 async def test_four_recipients_all_get_the_email(migrated: Database, sent: Sent) -> None:
   # aeth_ext reads any 4-item sequence of strings as one Address, so a bare 4-tuple of recipients failed every run.
   recipients = ("a@example.com", "b@example.com", "c@example.com", "d@example.com")
+  await set_recipients(migrated, *recipients)
   await add_employee(migrated, "Ann", "Office")
-  await PayrollReportJob(migrated, recipients).main(SCHEDULED)
+  await job(migrated).main(SCHEDULED)
   [(msg, _)] = sent
   assert [a.addr_spec for a in msg["To"].addresses] == list(recipients)
+
+
+async def test_recipients_are_the_entrys_own_rows(migrated: Database, sent: Sent) -> None:
+  await set_recipients(migrated, "b@example.com", "a@example.com")
+  await set_recipients(migrated, "z@example.com", report="other_report")
+  await job(migrated, ("default",)).main(SCHEDULED)
+  [(msg, _)] = sent
+  assert [a.addr_spec for a in msg["To"].addresses] == ["a@example.com", "b@example.com"]
+
+
+async def test_no_recipients_fails_before_any_workbook(migrated: Database, sent: Sent, monkeypatch: pytest.MonkeyPatch) -> None:
+  await set_recipients(migrated)
+  monkeypatch.setattr(payroll_report, "write_workbook", lambda *_: pytest.fail("built a workbook"))
+  with pytest.raises(ValueError, match="payroll_report"):
+    await job(migrated, ("default",)).main(SCHEDULED)
+  assert sent == []
+
+
+async def test_an_edit_applies_to_the_next_run(migrated: Database, sent: Sent) -> None:
+  j = job(migrated, ("default",))
+  await j.main(SCHEDULED)
+  await set_recipients(migrated, "c@example.com")
+  await j.main(SCHEDULED)
+  assert [m["To"] for m, _ in sent] == ["a@example.com", "c@example.com"]
+
+
+def test_groups_is_keyword_only() -> None:
+  # The old call shape passed recipients second; read as group names, they'd fail every run as unknown groups.
+  with pytest.raises(TypeError):
+    PayrollReportJob(Database("x", "y", production=True), ("a@example.com",))  # pyright: ignore[reportCallIssue]
 
 
 async def test_workbook_tabs_and_headers_match_the_spec(migrated: Database, sent: Sent) -> None:

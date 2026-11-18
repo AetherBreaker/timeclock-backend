@@ -10,12 +10,12 @@ from timeclock_backend.jobs.auto_clock_out import AutoClockOutJob
 from timeclock_backend.jobs.payroll_report import PayrollReportJob
 from timeclock_backend.scheduling import Cron, Entry, Retry
 
-# Placeholder recipient and schedule until the owner settles the real entries (spec §7.1).
+# Placeholder schedule until the owner settles the real entries (spec §7.1). Recipients are backend.report_recipients rows.
 STATIC: Final[tuple[Entry, ...]] = (
   Entry(
     "payroll_report",
     Cron("0 6 * * MON"),
-    PayrollReportJob(next(db for db in DATABASES if db.production), ("jacob.ogden@sweetfiretobacco.com",)),
+    PayrollReportJob(next(db for db in DATABASES if db.production)),
     catch_up=True,
     retry=Retry(timedelta(minutes=15), 4),
   ),

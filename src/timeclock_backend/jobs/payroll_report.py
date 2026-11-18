@@ -1,7 +1,7 @@
 """The weekly payroll report (spec §7): one workbook per employee group for the last full Monday-to-Sunday week, in one email.
 
-`python -m timeclock_backend.jobs.payroll_report` runs the registry's entry once for last week and sends a real email to its
-recipients.
+`python -m timeclock_backend.jobs.payroll_report` runs the registry's entry once for last week and sends a real email to the
+entry's `backend.report_recipients` rows.
 """
 
 # The registry imports this module; the `__main__` block imports it back, lazily.
@@ -28,12 +28,14 @@ from timeclock_backend.settings import SETTINGS
 
 
 class PayrollReportJob(JobBase):
-  """Emails one payroll workbook per group (`groups=None`: every group) to `recipients`."""
+  """Emails one payroll workbook per group (`groups=None`: every group) to its entry's `backend.report_recipients` rows."""
 
-  def __init__(self, database: Database, recipients: tuple[str, ...], groups: tuple[str, ...] | None = None) -> None:
-    """The job reading `database`, for the named `groups` or every group."""
+  def __init__(self, database: Database, *, groups: tuple[str, ...] | None = None) -> None:
+    """The job reading `database`, for the named `groups` or every group.
+
+    `groups` is keyword-only: the old second argument was the recipients, which would otherwise read as group names.
+    """
     self.database = database
-    self.recipients = recipients
     self.groups = groups
 
   @staticmethod
@@ -53,11 +55,21 @@ class PayrollReportJob(JobBase):
     """Build every covered group's workbook in a temporary directory, email them together, and delete them.
 
     Raises:
-      ValueError: A named group doesn't exist (a failed run, not a silently smaller email).
+      ValueError: The entry has no recipients, or a named group doesn't exist (a failed run, not an email to nobody or a
+        silently smaller one).
     """
     period = self.week(scheduled_for)
     stem = f"Timeclock Report {period.start} to {period.end}"
     async with await connect(self.database.name) as conn:
+      # Read at every run, so an edit applies from the next one.
+      recipients = [
+        row["email"]
+        for row in await (
+          await conn.execute("SELECT email FROM backend.report_recipients WHERE report = %s ORDER BY email", (self.name,))
+        ).fetchall()
+      ]
+      if not recipients:
+        raise ValueError(f"no recipients for {self.name} in backend.report_recipients")
       known = {row["name"]: row["id"] for row in await (await conn.execute("SELECT id, name FROM groups ORDER BY id")).fetchall()}
       names = list(known) if self.groups is None else list(self.groups)
       if missing := [name for name in names if name not in known]:
@@ -98,7 +110,7 @@ class PayrollReportJob(JobBase):
             "body": f"Timeclock reports for {period.start} to {period.end}, attached: {', '.join(names)}.",
             "from_addr": SETTINGS.alerts_email,
             # Address objects: aeth_ext reads a bare 4-item sequence of strings as one Address and raises.
-            "to_addrs": [Address(addr_spec=r) for r in self.recipients],
+            "to_addrs": [Address(addr_spec=r) for r in recipients],
             "attachments": paths,
           }
         )
@@ -113,4 +125,5 @@ if __name__ == "__main__":
 
   initialize(asyncio=True, logging=True)
   entry = next(e for e in STATIC if e.name == "payroll_report")
+  entry.job.name = entry.name  # the runner's job, outside the runner: its name picks its recipients
   asyncio.run(entry.job.main(datetime.now().astimezone()))
