@@ -222,6 +222,7 @@ export default {
             banner: e.kind === "new" ? null : D.banner(e, { tz: this.tz, h24: this.h24 }), // a shift being added says what it lacks under Save
             flags: flags(e, over, flagged),
             breaksNote: e.kind === "shift" ? D.breaksNote(e, over, { tz: this.tz, limit: d.base.maxBreaksPerDay, first: this.first }) : null,
+            flagNotes: D.flaggedNotes(e, flagged, { ...d.base, tz: this.tz, h24: this.h24, first: this.first }),
             automatic: out !== null && out.automatic && out.version === null ? out : null,
             hours: e.kind === "shift" ? entryHours(e, this.current, this.hoursOpts) : null,
             before: old !== undefined && old.kind === "shift" ? entryHours(old, d.base.punches, this.hoursOpts) : null,
@@ -511,6 +512,11 @@ export default {
               <span class="page-icon icon-warning"></span>
               <div class="grow">{{ v.breaksNote.text }}</div>
               <button class="btn outline" @click="apply((d) => v.breaksNote.ids.reduce((next, id) => D.confirm(next, id), d))">Mark as correct</button>
+            </div>
+            <div v-for="n in readOnly ? [] : v.flagNotes" :key="n.id" class="callout orange">
+              <span class="page-icon icon-warning"></span>
+              <div class="grow">{{ n.text }}</div>
+              <button class="btn outline" @click="apply((d) => D.confirm(d, n.id))">Mark as correct</button>
             </div>
             <div v-if="v.punches.length" class="card">
               <h4>Timeline</h4>
