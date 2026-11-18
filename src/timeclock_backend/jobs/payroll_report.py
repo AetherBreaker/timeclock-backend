@@ -131,7 +131,8 @@ class PayrollReportJob(JobBase):
                 *([note] if note else []),
               ]
             ),
-            "from_addr": SETTINGS.alerts_email,
+            # Named, so the inbox shows who sent it (aeth_ext's alerts from the same address read "SFT ALERTS").
+            "from_addr": Address(display_name="SFT Timeclock Backend", addr_spec=str(SETTINGS.alerts_email)),
             # Address objects: aeth_ext reads a bare 4-item sequence of strings as one Address and raises.
             "to_addrs": [Address(addr_spec=r) for r in recipients],
             "attachments": paths,

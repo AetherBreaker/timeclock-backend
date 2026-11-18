@@ -309,6 +309,13 @@ async def test_send_appends_the_note_and_sends_to_the_given_addresses(migrated: 
   assert note in body.get_content()
 
 
+async def test_the_sender_is_named_as_the_timeclock_backend(migrated: Database, sent: Sent) -> None:
+  await job(migrated, ("default",)).main(SCHEDULED)
+  [(msg, _)] = sent
+  [sender] = msg["From"].addresses
+  assert (sender.display_name, sender.addr_spec) == ("SFT Timeclock Backend", "info@sweetfiretobacco.com")
+
+
 def test_groups_is_keyword_only() -> None:
   # The old call shape passed recipients second; read as group names, they'd fail every run as unknown groups.
   with pytest.raises(TypeError):
