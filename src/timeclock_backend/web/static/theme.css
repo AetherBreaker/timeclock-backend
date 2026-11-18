@@ -599,9 +599,43 @@ body.test-database {
   border-radius: 4px;
 }
 
+/* Fixed layout: each column's width comes from its heading's class below, never from its contents, so every
+   employee's card lines up with the others (owner, 2026-11-18). Each fits its column's longest value; the status
+   column, with no width, takes the rest. */
 table.sh {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
+}
+
+table.sh th.c-day {
+  width: 110px;
+}
+
+table.sh th.c-in,
+table.sh th.c-out {
+  width: 95px;
+}
+
+table.sh th.c-breaks {
+  width: 160px;
+}
+
+table.sh th.c-lunch {
+  width: 90px;
+}
+
+table.sh th.c-worked,
+table.sh th.c-paid {
+  width: 105px;
+}
+
+table.sh th.c-clock {
+  width: 130px;
+}
+
+table.sh th.c-punches {
+  width: 170px;
 }
 
 table.sh th {
@@ -655,19 +689,24 @@ table.sh .unpaid {
   color: var(--chip-orange);
 }
 
-table.sh td.st {
-  width: 1%;
-}
-
+/* The technical columns have no longest value: they wrap within their width instead of spilling. */
 table.sh td.mono {
   font-family: Consolas, "Courier New", monospace;
   font-size: 12px;
   color: var(--details);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* The status column gets only what the set widths leave, so on a narrow screen its chips take another line, and a
+   chip wider than the column wraps its own words, rather than spill past the card. */
+table.sh td.st .chip {
+  white-space: normal;
 }
 
 table.sh .chips {
   gap: 4px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
 }
 

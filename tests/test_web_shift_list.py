@@ -358,6 +358,37 @@ async def test_breaks_on_keeps_the_columns(db_page: DbPage) -> None:
     await db_page.user.should_see(marker=marker)
 
 
+def _lunches_off(page: DbPage) -> None:
+  with page.db.admin() as c:
+    c.execute("UPDATE config.settings SET lunches_enabled = false")
+
+
+async def test_lunches_off_hides_the_lunch_column_of_a_week_without_lunches(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  first = _shift(db_page, bob, 3, "08:00", "16:00")
+  _lunches_off(db_page)
+  await db_page.user.open("/")
+  await db_page.user.should_see(marker=f"paid-{first}", content="8:00")
+  await db_page.user.should_not_see(marker=f"head-lunch-{bob}")
+
+
+async def test_lunches_off_keeps_the_lunch_column_when_a_shift_has_a_lunch(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  _shift(db_page, bob, 3, "08:00", "16:00")
+  db_page.db.punch(bob, "lunch_start", _ny(3, "12:00"))
+  db_page.db.punch(bob, "lunch_end", _ny(3, "12:30"))
+  _lunches_off(db_page)
+  await db_page.user.open("/")
+  await db_page.user.should_see(marker=f"head-lunch-{bob}")
+
+
+async def test_lunches_on_keeps_the_lunch_column(db_page: DbPage) -> None:
+  bob = db_page.db.employees[1]
+  _shift(db_page, bob, 3, "08:00", "16:00")
+  await db_page.user.open("/")
+  await db_page.user.should_see(marker=f"head-lunch-{bob}")
+
+
 def _three_breaks(page: DbPage, employee: int) -> tuple[UUID, list[UUID]]:
   """Tuesday 8 to 4 with breaks at 9, 11 and 2, all written as a clock writes them (the owner's login counts as by hand)."""
   clock = "timeclock_clock_front"  # the owner's login counts as by hand, which would read as reviewed
