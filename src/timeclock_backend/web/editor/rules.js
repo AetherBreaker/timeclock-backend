@@ -3,8 +3,9 @@
 // test (tests/test_web_drift.py) runs both over the same cases, so a change on either side goes to the other.
 //
 // Times are epoch milliseconds, ids lowercase UUID strings (their string order is the UUIDs' order), and a punch is
-// web/rules.py's PagePunch as JSON: {id, kind, at, automatic, originalKind, originalAt, version, addedOnPage,
-// instanceId, dbLogin, receivedAt, changedBy, changedAt}.
+// web/rules.py's PagePunch as JSON: {id, kind, at, atMicros, automatic, originalKind, originalAt, originalAtMicros,
+// version, addedOnPage, instanceId, dbLogin, receivedAt, changedBy, changedAt}. atMicros is what the floor to `at` drops
+// (shift_editor.punch_json), and only orders; a time set on the page has none.
 
 export const PENDING = "00000000-0000-0000-0000-000000000000";
 export const PAGE_INSTANCE_ID = "web";
@@ -24,8 +25,8 @@ const NEXT_STATE = {
   lunch_end: "working",
 };
 
-// The walk's order: time, then id.
-export const order = (a, b) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+// The walk's order: time to the microsecond, then id.
+export const order = (a, b) => a.at - b.at || a.atMicros - b.atMicros || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 // The schema's build_timeline over punches already corrected.
 export function buildTimeline(punches, asOf) {
@@ -330,15 +331,20 @@ export function applyRecords(base, records) {
     else if (r.action === "amend") {
       const was = byId.get(r.punchId);
       const kind = r.kind === null ? was.originalKind : r.kind;
-      byId.set(r.punchId, { ...was, kind, at: r.at === null ? was.originalAt : r.at, version: PENDING });
+      const at = r.at === null ? was.originalAt : r.at;
+      // A time kept is saved to the microsecond (shift_editor.draft_from_json), one moved on the millisecond.
+      const atMicros = at === was.at ? was.atMicros : at === was.originalAt ? was.originalAtMicros : 0;
+      byId.set(r.punchId, { ...was, kind, at, atMicros, version: PENDING });
     } else {
       byId.set(r.punchId, {
         id: r.punchId,
         kind: r.kind,
         at: r.at,
+        atMicros: 0,
         automatic: false,
         originalKind: r.kind,
         originalAt: r.at,
+        originalAtMicros: 0,
         version: null,
         addedOnPage: true,
         instanceId: PAGE_INSTANCE_ID,

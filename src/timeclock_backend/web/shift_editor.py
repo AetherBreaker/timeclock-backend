@@ -101,14 +101,20 @@ def _moment(value: int | None) -> datetime | None:
 
 
 def punch_json(p: PagePunch) -> dict[str, Any]:
-  """A punch as `editor/rules.js` takes it."""
+  """A punch as `editor/rules.js` takes it.
+
+  `atMicros`/`originalAtMicros` are the microseconds `ms` floors away, so the editor orders punches in one millisecond
+  as the database does: the clock writes a break's end a microsecond before its clock-out.
+  """
   return {
     "id": str(p.id),
     "kind": p.kind.value,
     "at": ms(p.at),
+    "atMicros": p.at.microsecond % 1000,
     "automatic": p.automatic,
     "originalKind": p.original_kind.value,
     "originalAt": ms(p.original_at),
+    "originalAtMicros": p.original_at.microsecond % 1000,
     "version": None if p.version is None else str(p.version),
     "addedOnPage": p.added_on_page,
     "instanceId": p.instance_id,

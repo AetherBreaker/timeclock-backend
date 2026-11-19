@@ -2,7 +2,8 @@
 
 The editor previews hours with `editor/rules.js` while Python's `web/rules.py`, over the schema's own walk, decides
 what's saved. Every function both sides have runs here over generated and hand-picked cases; `drift_driver.mjs` is the
-JavaScript side. Times cross as epoch milliseconds and ids as lowercase UUID strings.
+JavaScript side. Times cross as epoch milliseconds plus the microseconds the floor drops, as `punch_json` sends
+them, and ids as lowercase UUID strings.
 """
 
 # Standard library imports
@@ -24,7 +25,8 @@ from timeclock_schema.shifts import week_bounds
 
 # First party imports
 from timeclock_backend.web import rules, text
-from timeclock_backend.web.rules import DraftPunch, PagePunch
+from timeclock_backend.web.rules import PagePunch
+from timeclock_backend.web.shift_editor import draft_from_json
 
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 DRIVER = Path(__file__).with_name("drift_driver.mjs")
@@ -52,9 +54,11 @@ def _punch(at: datetime, kind: PunchKind, **fields: Any) -> dict[str, Any]:
     "id": str(uuid4()),
     "kind": kind.value,
     "at": _ms(at),
+    "atMicros": at.microsecond % 1000,
     "automatic": False,
     "originalKind": kind.value,
     "originalAt": _ms(at),
+    "originalAtMicros": at.microsecond % 1000,
     "version": None,
     "addedOnPage": False,
     "instanceId": "front",
@@ -70,10 +74,10 @@ def _page_punch(p: dict[str, Any]) -> PagePunch:
   return PagePunch(
     id=UUID(p["id"]),
     kind=PunchKind(p["kind"]),
-    at=_dt(p["at"]),
+    at=_dt(p["at"]) + timedelta(microseconds=p["atMicros"]),
     automatic=p["automatic"],
     original_kind=PunchKind(p["originalKind"]),
-    original_at=_dt(p["originalAt"]),
+    original_at=_dt(p["originalAt"]) + timedelta(microseconds=p["originalAtMicros"]),
     version=None if p["version"] is None else UUID(p["version"]),
     added_on_page=p["addedOnPage"],
     instance_id=p["instanceId"],
@@ -269,8 +273,26 @@ def _hand_picked() -> list[dict[str, Any]]:
     day(("07:00", IN), ("12:00", LS), ("17:00", OUT)),
     [long_break[0], {**long_break[1], "version": str(uuid4())}, *long_break[2:]],
   ]
+  # The clock's end-and-out pair as it writes it, a microsecond apart in one millisecond, with ids the other way round;
+  # a stray's microseconds, unlike a break's, change no hours.
+  pair = day(
+    ("07:00", IN),
+    ("14:50", BS),
+    (out + timedelta(microseconds=123456), BE),
+    (out + timedelta(microseconds=123457), OUT),
+    (_local(tue, "17:00") + timedelta(microseconds=999), OUT),
+  )
+  pair[2:4] = [{**pair[2], "id": str(UUID(int=2))}, {**pair[3], "id": str(UUID(int=1))}]
+  added = str(UUID(int=3))
+  pair_drafts = [
+    [],
+    [{**_draft_of(pair[2]), "confirmed": True}],  # kept to the microsecond
+    [{**_draft_of(pair[4]), "at": pair[2]["at"]}],  # moved into the pair's millisecond, which it saves on exactly
+    [{"id": added, "kind": OUT.value, "at": pair[2]["at"], "removed": False, "confirmed": False, "version": None, "new": True}],
+  ]
   return [
     *(_case("America/New_York", f, as_of=later, week_of=_local(tue, "12:00")) for f in flagged),
+    *(_case("America/New_York", pair, as_of=later, week_of=_local(tue, "12:00"), draft=d) for d in pair_drafts),
     _case(
       "America/New_York",
       day(("07:00", IN), ("09:00", BS), ("09:15", BE), ("15:00", OUT)),
@@ -323,18 +345,6 @@ def _draft_of(p: dict[str, Any]) -> dict[str, Any]:
   return {"id": p["id"], "kind": p["kind"], "at": p["at"], "removed": False, "confirmed": False, "version": p["version"], "new": False}
 
 
-def _draft_punch(d: dict[str, Any]) -> DraftPunch:
-  return DraftPunch(
-    id=UUID(d["id"]),
-    kind=PunchKind(d["kind"]),
-    at=_dt(d["at"]),
-    removed=d["removed"],
-    confirmed=d["confirmed"],
-    version=None if d["version"] is None else UUID(d["version"]),
-    new=d["new"],
-  )
-
-
 def _entry_json(e: rules.Entry) -> dict[str, Any]:
   return {
     "kind": e.kind.value,
@@ -358,7 +368,7 @@ def _answer(case: dict[str, Any]) -> dict[str, Any]:
   )
   punches = [_page_punch(p) for p in case["punches"]]
   base = {p.id: p for p in punches}
-  draft = [_draft_punch(d) for d in case["draft"]]
+  draft = draft_from_json(case["draft"], punches)
   found = rules.entries(punches, as_of=as_of)
   over = rules.over_breaks(found, limit=case["maxBreaksPerDay"], tz=tz)
   flagged = [rules.flagged_breaks(e, settings=settings) for e in found]
