@@ -126,6 +126,20 @@ async def test_a_bad_line_alerts_once_and_keeps_the_schedule(
   [(subject, details)] = alerts
   assert subject == f"Bad schedule for {NAME}"
   assert "not a cron" in details
+  assert "until the backend restarts" in details  # kept for now, but a restart idles it
+  assert runner.next_run(NAME) == upcoming(SEEDED)
+
+
+async def test_a_line_that_never_fires_alerts_and_keeps_the_schedule(
+  migrated: Database, runner: Runner, entry: Entry, alerts: list[tuple[str, str]]
+) -> None:
+  # cronsim parses it, but no date matches: scheduling it would leave nothing to wait for.
+  seen: dict[str, str | None] = {}
+  await apply_report_schedules(runner, [entry], migrated, seen)
+  await scheduled(runner, SEEDED)
+  await change(migrated, "UPDATE backend.report_schedules SET cron = '0 13 */14 * TUE#2' WHERE report = %s", NAME)
+  await apply_report_schedules(runner, [entry], migrated, seen)
+  assert [subject for subject, _ in alerts] == [f"Bad schedule for {NAME}"]
   assert runner.next_run(NAME) == upcoming(SEEDED)
 
 
@@ -134,7 +148,9 @@ async def test_a_bad_line_at_start_leaves_the_entry_idle(
 ) -> None:
   await change(migrated, "UPDATE backend.report_schedules SET cron = '0 25 * * *' WHERE report = %s", NAME)
   await apply_report_schedules(runner, [entry], migrated, {})
-  assert [subject for subject, _ in alerts] == [f"Bad schedule for {NAME}"]
+  [(subject, details)] = alerts
+  assert subject == f"Bad schedule for {NAME}"
+  assert "won't run until the line is fixed" in details  # nothing to keep: no "keeps its schedule" comfort
   assert runner.next_run(NAME) is None
 
 

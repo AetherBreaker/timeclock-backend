@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 # Third party imports
-from cronsim import CronSim
+from cronsim import CronSim, CronSimError
 
 # First party imports
 # Local application imports
@@ -25,8 +25,15 @@ class Cron:
   tz: ZoneInfo = field(default_factory=lambda: SETTINGS.tz)
 
   def __post_init__(self) -> None:
-    """Parse the line now so a bad one fails at construction."""
-    CronSim(self.expr, datetime.now(self.tz))
+    """Parse the line now so a bad one fails at construction, as does one that never fires.
+
+    cronsim parses some of those (`0 13 */14 * TUE#2`) and only gives up its search 50 years on; `next_after` and
+    `latest_before` would then raise mid-schedule, out of the runner.
+    """
+    now = datetime.now(self.tz)
+    if next(CronSim(self.expr, now), None) is None or next(CronSim(self.expr, now, reverse=True), None) is None:
+      msg = "the line never fires"
+      raise CronSimError(msg)
 
   def next_after(self, t: datetime) -> datetime:
     """First fire time strictly after aware `t`; `CronSim` may yield `t` itself when it is a fire time."""
@@ -34,7 +41,7 @@ class Cron:
     for fire in CronSim(self.expr, t):
       if fire > t:
         return fire
-    raise AssertionError  # pragma: no cover  # CronSim iterates indefinitely
+    raise AssertionError  # pragma: no cover  # __post_init__ refused a line that never fires
 
   def latest_before(self, t: datetime) -> datetime:
     """Most recent fire time at or before aware `t`."""

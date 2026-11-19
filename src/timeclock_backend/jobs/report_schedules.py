@@ -18,6 +18,7 @@ from cronsim import CronSimError
 # First party imports
 from timeclock_backend.databases import Database, connect
 from timeclock_backend.scheduling import Cron
+from timeclock_backend.settings import SETTINGS
 
 if TYPE_CHECKING:
   # Standard library imports
@@ -34,8 +35,8 @@ async def apply_report_schedules(runner: Runner, entries: Sequence[Entry], db: D
   """Give each entry its row's line, skipping a line already in `seen` (the last handled per entry; None for no row).
 
   A skipped line is a reconnect, a ping for another row or a whitespace edit: a replace then would cancel a resting retry.
-  A bad line alerts and keeps the current schedule (none at startup); no row alerts and idles the entry. `seen` is
-  updated either way, so each alerts once.
+  A bad line alerts and keeps the current schedule until a restart (none at startup, so it's idle then); no row alerts
+  and idles the entry. `seen` is updated either way, so each alerts once.
   """
   async with await connect(db.name) as conn:
     rows = {r["report"]: r["cron"] for r in await (await conn.execute("SELECT report, cron FROM backend.report_schedules")).fetchall()}
@@ -57,9 +58,17 @@ async def apply_report_schedules(runner: Runner, entries: Sequence[Entry], db: D
     try:
       schedule = Cron(line)
     except CronSimError as e:
+      # Says when it's idle: "keeps its schedule" after a restart would hide a report that stopped.
+      due = runner.next_run(name)
+      kept = (
+        "It won't run until the line is fixed."
+        if due is None
+        else f"It keeps its current schedule (next run {due.astimezone(SETTINGS.tz):%Y-%m-%d %H:%M}) until the backend"
+        " restarts; then it won't run until the line is fixed."
+      )
       alert(
         f"Bad schedule for {name}",
-        f"backend.report_schedules in {db.name} has {line!r} for {name}, which isn't a cron line ({e}). It keeps its current schedule.",
+        f"backend.report_schedules in {db.name} has {line!r} for {name}, which isn't a cron line that runs ({e}). {kept}",
         wait=False,
       )
       continue

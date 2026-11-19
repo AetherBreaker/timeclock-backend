@@ -54,6 +54,12 @@ def test_bad_cron_line_raises_at_construction() -> None:
     Cron("0 6 * * FUNDAY")
 
 
+def test_a_line_that_never_fires_raises_at_construction() -> None:
+  # cronsim parses it, but no day is both the 1st, 15th or 29th and its month's second Tuesday.
+  with pytest.raises(CronSimError, match="never"):
+    Cron("0 13 */14 * TUE#2")
+
+
 def test_at_always_returns_its_time() -> None:
   when = datetime(2026, 11, 10, 23, tzinfo=NY)
   assert At(when).next_after(when + timedelta(days=1)) == when
