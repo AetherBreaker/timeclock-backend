@@ -560,7 +560,7 @@ test("the flagged breaks' callouts say what happened and Mark as correct reviews
   assert.deepEqual(flagNotes(punch(2, "break_start", 3, "16:48"), ...pair).notes, [{ text: left, id: id(2) }]);
   assert.deepEqual(flagNotes(punch(2, "break_start", 3, "14:10"), punch(4, "clock_out", 3, "21:00")).notes, [
     {
-      text: "Bob was still on a break from 2:10 PM when the shift ended at 9:00 PM. Add when the break really ended below, or mark it as correct if it's right.",
+      text: "Bob was still on a break from 2:10 PM when the shift ended at 9:00 PM. Set when the break really ended below, or mark it as correct if it's right.",
       id: id(2),
     },
   ]);
@@ -569,7 +569,7 @@ test("the flagged breaks' callouts say what happened and Mark as correct reviews
   ]);
   assert.deepEqual(flagNotes(punch(2, "lunch_start", 3, "12:00"), punch(4, "clock_out", 3, "17:00")).notes, [
     {
-      text: "Bob was still at lunch from 12:00 PM when the shift ended at 5:00 PM. Add when the lunch really ended below, or mark it as correct if it's right.",
+      text: "Bob was still at lunch from 12:00 PM when the shift ended at 5:00 PM. Set when the lunch really ended below, or mark it as correct if it's right.",
       id: id(2),
     },
   ]);
