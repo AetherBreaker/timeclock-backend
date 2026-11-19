@@ -512,8 +512,8 @@ export function flaggedNotes(entry, flagged, { tz, h24, first, breakLimitMinutes
         long_break: `${first}'s break ${lasted}; ${breaks}. ${fix}`,
         long_lunch: `${first}'s lunch ${lasted}; ${lunches}. ${fix}`,
         left_on_break: `${first} clocked out at ${out} during a break that started at ${from}. ${fix}`,
-        break_not_ended: `${first} was still on a break from ${from} when the shift ended at ${out}. Add when the break really ended below, or mark it as correct if it's right.`,
-        lunch_not_ended: `${first} was still at lunch from ${from} when the shift ended at ${out}. Add when the lunch really ended below, or mark it as correct if it's right.`,
+        break_not_ended: `${first} was still on a break from ${from} when the shift ended at ${out}. Set when the break really ended below, or mark it as correct if it's right.`,
+        lunch_not_ended: `${first} was still at lunch from ${from} when the shift ended at ${out}. Set when the lunch really ended below, or mark it as correct if it's right.`,
       }[flag];
       return { text, id: start.id };
     });
