@@ -145,9 +145,9 @@ class PayrollReportJob(JobBase):
 if __name__ == "__main__":
   # Deferred: the registry imports this module.
   # First party imports
-  from timeclock_backend.schedule import STATIC
+  from timeclock_backend.schedule import DYNAMIC
 
   initialize(asyncio=True, logging=True)
-  entry = next(e for e in STATIC if e.name == "payroll_report")
+  entry = next(e for e in DYNAMIC if e.name == "payroll_report")
   entry.job.name = entry.name  # the runner's job, outside the runner: its name picks its recipients
   asyncio.run(entry.job.main(datetime.now().astimezone()))

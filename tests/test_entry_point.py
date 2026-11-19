@@ -84,15 +84,14 @@ async def request_when_relay_up():
   run_shutdown(ShutdownKind.GRACEFUL)
 
 startup.bootstrap = no_bootstrap
-# The real STATIC payroll entry would catch up against a database that isn't there, and on Linux log its refused connection.
-startup.STATIC = ()
 startup.DYNAMIC = (Entry("slow", At(datetime.now(UTC)), Slow()),) if SLOW else ()
 
-async def nothing(db):
+async def nothing(*_):
   pass
 
-# Likewise the report send listeners: no database is there.
+# The listeners: no database is there, and on Linux each would log its refused connection.
 startup.listen_for_report_sends = nothing
+startup.listen_for_report_schedules = nothing
 real_start_relay = startup.start_relay
 
 async def start_relay_then_request(**kwargs):
