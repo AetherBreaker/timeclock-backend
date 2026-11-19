@@ -1,4 +1,4 @@
-"""Tests for catching up a missed run at start, and the run stores."""
+"""Tests for catching up a missed run at start or on a replace, and the run stores."""
 
 # Standard library imports
 import asyncio
@@ -13,7 +13,8 @@ from scheduling_sim import NY, FakeClock, RecordingJob, ny, until
 # First party imports
 # Local application imports
 from timeclock_backend.bootstrap import bootstrap
-from timeclock_backend.databases import connect
+from timeclock_backend.databases import DATABASES, connect
+from timeclock_backend.jobs.payroll_report import PayrollReportJob
 from timeclock_backend.scheduling import At, Cron, Entry, MemoryRunStore, PgRunStore, Retry, Runner, RunRecord, jobs
 
 if TYPE_CHECKING:
@@ -161,6 +162,63 @@ async def test_restart_just_after_the_time_sends_once(runners: list[Runner]) -> 
   assert job.ran_at == [ny(6, 0, 30, day=16)]
   assert store.records["weekly"] == RunRecord("2026-11-16", ny(6, day=16))
   assert runner.next_run("weekly") == ny(6, day=23)
+
+
+class PayrollPeriodJob(RecordingJob):
+  """A run's period is the payroll report's: the Monday of the week before its day."""
+
+  @override
+  def period(self, scheduled_for: datetime) -> str:
+    return PayrollReportJob(next(iter(DATABASES))).period(scheduled_for)
+
+
+async def idle(runners: list[Runner], clock: FakeClock, store: MemoryRunStore, job: RecordingJob) -> Runner:
+  """A started runner whose one entry is dynamic, catch_up and idle, as the payroll report's is until its schedule arrives."""
+  runner = Runner([], [Entry("weekly", None, job, catch_up=True)], store=store, clock=clock)
+  runners.append(runner)
+  await runner.start()
+  return runner
+
+
+async def test_replace_catches_up_an_unsent_week(clock: FakeClock, runners: list[Runner]) -> None:
+  store = MemoryRunStore()
+  store.records["weekly"] = RunRecord("2026-11-02", ny(6, day=2))
+  job = WeeklyJob(clock)
+  runner = await idle(runners, clock, store, job)
+  runner.replace("weekly", Entry("weekly", MONDAYS, job, catch_up=True))
+  await until(lambda: job.seen != [])
+  await settle()
+  assert job.seen == [ny(6, day=9)]
+  assert store.records["weekly"] == RunRecord("2026-11-09", ny(6, day=9))
+  assert runner.next_run("weekly") == ny(6, day=16)
+
+
+async def test_replace_within_a_sent_week_sends_nothing(runners: list[Runner]) -> None:
+  clock = FakeClock(ny(12, day=11))  # Wednesday; Monday's ran, the cron is now Tuesdays at 13:00
+  store = MemoryRunStore()
+  done = RunRecord("2026-11-09", ny(6, day=9))
+  store.records["weekly"] = done
+  job = WeeklyJob(clock)
+  runner = await idle(runners, clock, store, job)
+  runner.replace("weekly", Entry("weekly", Cron("0 13 * * TUE", NY), job, catch_up=True))
+  await until(lambda: runner.next_run("weekly") == ny(13, day=17))
+  await settle()
+  assert job.seen == []
+  assert store.records["weekly"] == done
+
+
+async def test_deploy_day_switch_to_tuesdays_sends_nothing(runners: list[Runner]) -> None:
+  clock = FakeClock(ny(10, day=19))  # Thursday; production last sent Nov 9-15, on Monday the 16th at 06:00
+  store = MemoryRunStore()
+  done = RunRecord("2026-11-09", ny(6, day=16))
+  store.records["weekly"] = done
+  job = PayrollPeriodJob(clock)
+  runner = await idle(runners, clock, store, job)
+  runner.replace("weekly", Entry("weekly", Cron("0 13 * * TUE", NY), job, catch_up=True))
+  await until(lambda: runner.next_run("weekly") == ny(13, day=24))
+  await settle()
+  assert job.seen == []
+  assert store.records["weekly"] == done
 
 
 async def test_failed_run_is_not_recorded(clock: FakeClock, runners: list[Runner]) -> None:

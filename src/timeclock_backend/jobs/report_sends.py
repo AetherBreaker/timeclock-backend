@@ -19,7 +19,7 @@ from aeth_ext.errors.err_handling import alert
 from timeclock_backend.databases import Database, connect
 from timeclock_backend.jobs.payroll_report import PayrollReportJob
 from timeclock_backend.reports import Period
-from timeclock_backend.schedule import STATIC
+from timeclock_backend.schedule import DYNAMIC
 from timeclock_backend.settings import SETTINGS
 
 LOGGER: Final = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ async def process_pending(db: Database) -> int:
         return handled
       handled += 1
       try:
-        entry = next((e for e in STATIC if e.name == row["report"] and isinstance(e.job, PayrollReportJob)), None)
+        entry = next((e for e in DYNAMIC if e.name == row["report"] and isinstance(e.job, PayrollReportJob)), None)
         if entry is None:
           raise ValueError(f"unknown report {row['report']}")
         assert isinstance(entry.job, PayrollReportJob)  # narrowed above, for the type checker

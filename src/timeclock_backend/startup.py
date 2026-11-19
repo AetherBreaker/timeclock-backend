@@ -1,4 +1,4 @@
-"""Boot sequence: bootstrap, relay, job runner, settings and report send listeners, running until a shutdown."""
+"""Boot sequence: bootstrap, relay, job runner, and the settings, report schedule and report send listeners, until a shutdown."""
 
 # Standard library imports
 import asyncio
@@ -15,6 +15,8 @@ from aeth_ext.monitoring import run_heartbeat_async
 from timeclock_backend.bootstrap import bootstrap
 from timeclock_backend.databases import DATABASES
 from timeclock_backend.jobs.auto_clock_out import AutoClockOutJob, listen_for_settings
+from timeclock_backend.jobs.payroll_report import PayrollReportJob
+from timeclock_backend.jobs.report_schedules import listen_for_report_schedules
 from timeclock_backend.jobs.report_sends import listen_for_report_sends
 from timeclock_backend.relay import start_relay
 from timeclock_backend.schedule import DYNAMIC, STATIC
@@ -62,7 +64,8 @@ async def main() -> None:
     allowed=SETTINGS.relay_allowed_cidr,
   )
 
-  runner = Runner(STATIC, DYNAMIC, store=PgRunStore(next(db for db in DATABASES if db.production)))
+  production = next(db for db in DATABASES if db.production)
+  runner = Runner(STATIC, DYNAMIC, store=PgRunStore(production))
 
   def stop_runner(_trails: tuple[ExceptionTrail, ...]) -> None:
     # A plain function is held strongly (a bound method wouldn't be); `request_stop()` is thread-safe. Never `stop()` from
@@ -72,9 +75,11 @@ async def main() -> None:
   register_for_shutdown(stop_runner, phase=ShutdownPhase.THREADED, priority=-10)
   await runner.start()
 
-  # Each listener's first pass (on connect) schedules its idle entry.
+  # Each listener's first pass (on connect) schedules its idle entries; only production's report schedules count.
+  reports = [e for e in DYNAMIC if isinstance(e.job, PayrollReportJob)]
   listeners = [
     *(create_task(listen_for_settings(e.job), name=f"listen:{e.job.db.name}") for e in DYNAMIC if isinstance(e.job, AutoClockOutJob)),
+    create_task(listen_for_report_schedules(runner, reports, production), name="report-schedules"),
     *(create_task(listen_for_report_sends(db), name=f"report-sends:{db.name}") for db in DATABASES),
   ]
   for task in (heartbeat, *listeners):

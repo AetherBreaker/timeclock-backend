@@ -8,18 +8,20 @@ from typing import Final
 from timeclock_backend.databases import DATABASES
 from timeclock_backend.jobs.auto_clock_out import AutoClockOutJob
 from timeclock_backend.jobs.payroll_report import PayrollReportJob
-from timeclock_backend.scheduling import Cron, Entry, Retry
+from timeclock_backend.scheduling import Entry, Retry
 
-# Placeholder schedule until the owner settles the real entries (spec §7.1). Recipients are backend.report_recipients rows.
-STATIC: Final[tuple[Entry, ...]] = (
+# None for now: the payroll report's time is a row of production's backend.report_schedules, so its entry is dynamic.
+STATIC: Final[tuple[Entry, ...]] = ()
+
+# Idle until a listener's first pass schedules each one: startup's report schedule listener the payroll report (its
+# recipients are backend.report_recipients rows), its settings listeners the clock-outs.
+DYNAMIC: Final[tuple[Entry, ...]] = (
   Entry(
     "payroll_report",
-    Cron("0 6 * * MON"),
+    None,
     PayrollReportJob(next(db for db in DATABASES if db.production)),
     catch_up=True,
     retry=Retry(timedelta(minutes=15), 4),
   ),
+  *(Entry(f"auto_clock_out:{db.name}", None, AutoClockOutJob(db)) for db in DATABASES),
 )
-
-# Idle until the first pass (startup's settings listener) schedules each one.
-DYNAMIC: Final[tuple[Entry, ...]] = tuple(Entry(f"auto_clock_out:{db.name}", None, AutoClockOutJob(db)) for db in DATABASES)

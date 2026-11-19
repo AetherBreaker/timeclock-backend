@@ -20,7 +20,7 @@ from timeclock_backend.databases import Database, connect
 from timeclock_backend.jobs import payroll_report
 from timeclock_backend.jobs.payroll_report import PayrollReportJob
 from timeclock_backend.reports import Period
-from timeclock_backend.schedule import STATIC
+from timeclock_backend.schedule import DYNAMIC, STATIC
 from timeclock_backend.scheduling import Retry
 
 if TYPE_CHECKING:
@@ -399,7 +399,8 @@ async def test_send_failure_leaves_no_files(migrated: Database, monkeypatch: pyt
   assert not any(path.parent.exists() for path in attached)
 
 
-def test_registry_entry_is_the_placeholder() -> None:
-  e = next(e for e in STATIC if e.name == "payroll_report")
-  assert e.schedule is not None
-  assert (e.catch_up, e.retry, e.schedule.describe()) == (True, Retry(timedelta(minutes=15), 4), "At 06:00 on Monday")
+def test_registry_entry_is_dynamic_and_idle() -> None:
+  # Idle until production's backend.report_schedules row schedules it.
+  assert not any(e.name == "payroll_report" for e in STATIC)
+  e = next(e for e in DYNAMIC if e.name == "payroll_report")
+  assert (e.schedule, e.catch_up, e.retry) == (None, True, Retry(timedelta(minutes=15), 4))
