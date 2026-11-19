@@ -102,7 +102,7 @@ class Runner:
     """Log every entry with its next run and start waiting on each scheduled one."""
     self._loop = asyncio.get_running_loop()
     for entry in self._entries.values():
-      self._launch(entry, starting=True)
+      self._launch(entry)
       if (due := self._next[entry.name]) is None or entry.schedule is None:
         LOGGER.info("%s: idle", entry.name)
       else:
@@ -117,10 +117,11 @@ class Runner:
       msg = f"{entry.name}: catch_up needs a cron schedule"
       raise ValueError(msg)
 
-  def _launch(self, entry: Entry, *, starting: bool = False) -> None:
+  def _launch(self, entry: Entry) -> None:
     """Cancel the entry's wait (never a running job) and, once started, wait on its new schedule.
 
-    At start, a `catch_up` entry's wait first checks its latest past time against the store (spec §5).
+    At start and on every replace, a `catch_up` entry's wait first checks its latest past time against the store (spec §5),
+    so a schedule change neither skips an unsent period nor resends a sent one.
     """
     if old := self._waits.pop(entry.name, None):
       old.cancel()
@@ -133,7 +134,7 @@ class Runner:
     due = entry.schedule.next_after(now)
     self._next[entry.name] = due
     check = False
-    if starting and entry.catch_up and isinstance(entry.schedule, Cron):
+    if entry.catch_up and isinstance(entry.schedule, Cron):
       due, check = entry.schedule.latest_before(now), True
     wait = asyncio.create_task(self._wait(entry, due, check=check), name=f"schedule {entry.name}")
     # An unexpected error would end this entry's schedule silently; the loop handler makes it fatal and the restart re-plans.
@@ -141,7 +142,7 @@ class Runner:
     self._waits[entry.name] = wait
 
   def replace(self, name: str, entry: Entry) -> None:
-    """Replace a dynamic entry's definition; a run in progress finishes first."""
+    """Replace a dynamic entry's definition; a run in progress finishes first. A `catch_up` entry catches up as at start."""
     if name not in self._dynamic:
       raise KeyError(name)
     if entry.name != name:
@@ -168,7 +169,7 @@ class Runner:
     return self._next[name]
 
   async def _wait(self, entry: Entry, due: datetime, *, check: bool = False) -> None:
-    """Run the entry at each time from `due`; with `check`, `due` is start's past catch-up time.
+    """Run the entry at each time from `due`; with `check`, `due` is a launch's past catch-up time.
 
     That first `due` needs no branch here: it doesn't sleep, and as a `catch_up` entry's latest time it runs however late.
     """
@@ -235,7 +236,7 @@ class Runner:
     """Run the job, retrying per `entry.retry`; an `Exception` goes to `on_failure`, never out of here.
 
     A `catch_up` entry's attempt is skipped when the store already holds `due`'s period, and recorded once the job
-    returns; failing to record fails the run. With `check` (start's catch-up) it also needs `due` past the record's time,
+    returns; failing to record fails the run. With `check` (a launch's catch-up) it also needs `due` past the record's time,
     so a cron moved later in the week can't move the record back and resend; with no record, `due` is recorded unrun so
     a deploy never sends a past period on the spot.
 
