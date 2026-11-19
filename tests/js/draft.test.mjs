@@ -14,9 +14,11 @@ const punch = (n, kind, day, time, extra = {}) => ({
   id: id(n),
   kind,
   at: at(day, time),
+  atMicros: 0,
   automatic: false,
   originalKind: kind,
   originalAt: at(day, time),
+  originalAtMicros: 0,
   version: null,
   addedOnPage: false,
   instanceId: "main-office",
@@ -172,6 +174,16 @@ test("mark as correct writes the unchanged time", () => {
   const draft = d.confirm(d.newDraft(base(automatic)), id(2));
   assert.deepEqual(d.recordsOf(draft), [{ action: "amend", punchId: id(2), kind: null, at: at(3, "23:00") }]);
   assert.deepEqual(d.changes(draft, { tz: TZ, h24: false }), ["Marked the automatic clock-out at 11:00 PM as correct"]);
+});
+
+test("punches in one millisecond go in their microseconds' order, which a moved one's new time drops", () => {
+  // The clock's end-and-out pair, its ids the other way round, and a stray from later moved into its millisecond.
+  const micros = (n, kind, time, us) => punch(n, kind, 3, time, { at: at(3, time) + 123, atMicros: us, originalAt: at(3, time) + 123, originalAtMicros: us });
+  const pair = [punch(4, "clock_in", 3, "07:00"), micros(9, "break_end", "15:00", 456), micros(1, "clock_out", "15:00", 457), micros(5, "clock_out", "17:00", 999)];
+  const draft = d.newDraft(base([pair[0], punch(6, "break_start", 3, "14:50"), ...pair.slice(1)]));
+  assert.deepEqual(d.punches(draft).map((p) => p.id), [id(4), id(6), id(9), id(1), id(5)]);
+  assert.deepEqual(d.punches(d.confirm(draft, id(9))).map((p) => p.id), [id(4), id(6), id(9), id(1), id(5)]);
+  assert.deepEqual(d.punches(d.setTime(draft, id(5), pair[1].at)).map((p) => p.id), [id(4), id(6), id(5), id(9), id(1)]);
 });
 
 test("a clock-out changed to a break start joins two shifts", () => {

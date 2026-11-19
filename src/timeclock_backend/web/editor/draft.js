@@ -111,7 +111,11 @@ export function punches(draft) {
   for (const p of draft.base.punches) {
     const edit = draft.edits.get(p.id);
     if (edit === undefined) found.push(p);
-    else if (!edit.removed) found.push({ ...p, kind: edit.kind, at: edit.at, version: PENDING });
+    else if (!edit.removed) {
+      // As rules.applyRecords keeps or drops the microseconds.
+      const atMicros = edit.at === p.at ? p.atMicros : edit.at === p.originalAt ? p.originalAtMicros : 0;
+      found.push({ ...p, kind: edit.kind, at: edit.at, atMicros, version: PENDING });
+    }
   }
   for (const [id, edit] of draft.edits) {
     if (!edit.new) continue;
@@ -119,9 +123,11 @@ export function punches(draft) {
       id,
       kind: edit.kind,
       at: edit.at,
+      atMicros: 0,
       automatic: false,
       originalKind: edit.kind,
       originalAt: edit.at,
+      originalAtMicros: 0,
       version: null,
       addedOnPage: true,
       instanceId: PAGE_INSTANCE_ID,

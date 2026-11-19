@@ -13,14 +13,15 @@ import page_sim
 from nicegui import app, ui
 from nicegui.client import Client
 from page_sim import page_settings
+from timeclock_schema.enums import PunchKind
 from timeclock_schema.shifts import week_bounds
 
 # First party imports
 from timeclock_backend.web import shift_editor, text
 from timeclock_backend.web.db import editor_transaction
 from timeclock_backend.web.gate import Gate, SignIn
-from timeclock_backend.web.rules import EntryKind, apply, entries, entry_hours, records, week_hours
-from timeclock_backend.web.shift_editor import ShiftEditor, draft_from_json, ms, save_shift
+from timeclock_backend.web.rules import EntryKind, PagePunch, apply, entries, entry_hours, records, week_hours
+from timeclock_backend.web.shift_editor import ShiftEditor, draft_from_json, ms, punch_json, save_shift
 from timeclock_backend.web.store import load_context, load_punches, window_token
 
 if TYPE_CHECKING:
@@ -117,6 +118,27 @@ async def _payload(db: PagesDb, employee: int, draft: list[dict[str, Any]], **op
     "preview": preview,
     "acceptServer": options.get("accept", False),
   }
+
+
+def test_a_punch_reaches_the_editor_with_the_microseconds_its_milliseconds_drop() -> None:
+  at = datetime(2026, 11, 3, 20, 0, 0, 123457, tzinfo=UTC)
+  p = PagePunch(
+    id=uuid4(),
+    kind=PunchKind.CLOCK_OUT,
+    at=at,
+    automatic=False,
+    original_kind=PunchKind.CLOCK_OUT,
+    original_at=at - timedelta(microseconds=2),
+    version=None,
+    added_on_page=False,
+    instance_id="front",
+    db_login="timeclock_clocks",
+    received_at=None,
+    changed_by=None,
+    changed_at=None,
+  )
+  sent = punch_json(p)
+  assert (sent["at"], sent["atMicros"], sent["originalAt"], sent["originalAtMicros"]) == (ms(at), 457, ms(at), 455)
 
 
 async def test_a_row_opens_its_shift_in_the_editor(db_page: DbPage) -> None:
